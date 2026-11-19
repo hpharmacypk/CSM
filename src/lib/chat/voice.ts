@@ -89,16 +89,16 @@ export function microphoneErrorMessage(error: unknown): string {
   }
 }
 
-/** Readable message for a failed upload (Supabase Storage error). */
-export function uploadErrorMessage(error: unknown): string {
+/** Readable message for a failed upload (Supabase Storage error). Shared by voice notes and images. */
+export function uploadErrorMessage(error: unknown, noun = "voice note"): string {
   const e = (error ?? {}) as { status?: number; statusCode?: string | number; message?: string };
   const code = Number(e.statusCode ?? e.status);
   const msg = (e.message ?? "").toLowerCase();
   if (code === 413 || msg.includes("size") || msg.includes("too large")) {
-    return "Voice note is too large to send.";
+    return `The ${noun} is too large to send.`;
   }
   if (code === 415 || msg.includes("mime") || msg.includes("not supported")) {
-    return "This audio format isn't accepted.";
+    return `This ${noun === "image" ? "image" : "audio"} format isn't accepted.`;
   }
   if (code === 401 || code === 403) {
     return "Upload not allowed. Refresh the page and try again.";

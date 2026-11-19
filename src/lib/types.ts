@@ -12,6 +12,8 @@ export type Message = {
   attachment_mime: string | null;
   attachment_size: number | null;
   attachment_duration_ms: number | null;
+  attachment_width: number | null;
+  attachment_height: number | null;
   client_message_id: string;
   created_at: string;
 };

@@ -5,8 +5,8 @@ inbox right away, with no signup, login or OTP. One admin signs in to a separate
 sees every conversation by recent activity with unread counts, and replies live.
 
 Requirements and phases: [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
-**Current status: Phase 1 (text chat) and Phase 2B (voice notes).** Images, backups and
-deployment are later phases.
+**Current status: Phase 1 (text chat), Phase 2B (voice notes) and Phase 2A (images).**
+Backups and deployment are later phases.
 
 ## Stack
 
@@ -36,6 +36,9 @@ creates a new inbox. The old conversation remains visible in the admin dashboard
 ```
 supabase/migrations/20261119000100_phase1_text_chat.sql   schema, RLS, functions, Realtime
 supabase/migrations/20261120000100_phase2b_voice_notes.sql private bucket, storage policies, voice sends
+supabase/migrations/20261121000100_phase2a_image_messages.sql image types + dimensions on the same bucket/function
+src/components/chat/ImagePicker.tsx, ChatImage.tsx          select/preview/send, inline image + viewer
+src/lib/chat/image.ts                                      validation, resize, compression, EXIF stripping
 src/components/chat/VoiceRecorder.tsx, VoiceNotePlayer.tsx  record/preview/send, inline playback
 src/lib/chat/voice.ts                                      formats, limits, readable errors
 supabase/snippets/add_admin.sql                           grant admin to one account (run by hand)
@@ -289,9 +292,113 @@ Known limitations:
 - Uploaded objects can't be deleted from the browser, so a voice note that uploaded but
   whose send was then **discarded** leaves an unreferenced file. A cleanup job belongs
   with backups (Phase 3).
-- Test cleanup: `cleanup_isolation_test_data.sql` deletes test threads, but their audio
+- Test cleanup: `cleanup_isolation_test_data.sql` deletes test threads, but their audio and image
   files stay in Storage. Delete the matching conversation folders in
   **Storage → chat-media** from the dashboard.
+
+## Phase 2A: image messages
+
+Guests and the admin can attach **one JPEG, PNG or WebP image** per message, preview it,
+remove it, and send it. Images appear inline in live chat and in saved history, and
+tapping one opens a full-size viewer.
+
+**Browser-side preparation** (`src/lib/chat/image.ts`):
+
+- Images are resized to at most **2048 px** on the longest side, which keeps small print
+  on boxes and labels readable.
+- They're re-encoded as WebP, or JPEG if the browser can't encode WebP. Quality is 0.85
+  for photos and 0.92 for PNGs/screenshots. A noisy 12 MP, 5.3 MB photo becomes about 600 KB.
+- Re-encoding **removes EXIF metadata** such as phone GPS location, and the photo's
+  orientation is applied first.
+- Transparent PNG areas become white when JPEG is used.
+- Rejected with a readable message: other types (GIF, HEIC, SVG), files over 25 MB,
+  images over 50 MP, and corrupt files.
+
+**Storage and database** reuse the voice-note setup in the private `chat-media` bucket:
+
+- The same conversation-scoped access rules and path rule (`.jpg`, `.png` or `.webp`).
+- The same `send_attachment_message()` function, now accepting `image`. It requires
+  the file extension, the stored file type and the message type to match, the file to be
+  at most 3 MB, and valid width/height.
+- The same idempotent retry: one message per client ID.
+- The conversation list preview reads "Photo".
+
+### Apply the migration (hosted project)
+
+Migration file: `supabase/migrations/20261121000100_phase2a_image_messages.sql`
+
+Apply it **after** `20261120000100_phase2b_voice_notes.sql`. It doesn't modify earlier
+files or saved messages. It:
+
+- adds the three image types to the bucket
+- adds `attachment_width` and `attachment_height` columns
+- extends the path rule
+- replaces `send_attachment_message()` with a version that takes optional `p_width` and
+  `p_height` (voice-note calls are unchanged)
+
+**SQL Editor:** paste the whole file → **Run**. **Or CLI:**
+
+```powershell
+npx supabase db push
+```
+
+Then check **Storage → chat-media → bucket settings**: the allowed MIME types should list
+the three audio types plus `image/jpeg, image/png, image/webp`, with a 3 MB limit.
+Restart `npm run dev`.
+
+### Test images
+
+Automated (a generated 1×1 PNG and synthetic JPEG/WebP bytes):
+
+```powershell
+npm run verify:isolation -- --admin
+```
+
+The image checks cover:
+
+- PNG, JPEG and WebP sends, with one message per retry
+- after a refresh, history contains text, voice and image, and the image bytes load
+- B cannot sign, download, list, upload into or attach A's images
+- no public URL
+- GIF/SVG and files over 3 MB are rejected, and a PNG stored at `.jpg` can't be sent
+- live delivery to the sender only
+- admin-to-guest images
+
+Manual browser steps:
+
+1. Guest (normal window): tap the **image** button → choose a phone photo of a product
+   label. The preview shows the new size, for example "2048×1536 · 640 KB (from 4.1 MB)".
+   Try **Remove**, pick it again, then **Send**. It shows "Uploading…" and then the image.
+2. Tap the image. The full-size viewer opens; check the small print is readable.
+   **Close** or Esc closes it.
+3. Admin: the thread shows "Photo" with an unread badge. Open it, view the image, and reply
+   with an image of your own. The guest receives it live.
+4. Refresh both sides. Text, voice notes and images are all still in history and load.
+5. A second guest (private window) sees none of the first guest's images.
+6. Offline retry: in DevTools set Network → Offline, send an image, and you should see
+   "Upload failed… Retry". Go back online and tap **Retry**. Exactly one image should
+   appear on both sides.
+7. Try a GIF, which should show "Only JPEG, PNG and WebP images can be sent."
+8. Repeat steps 1–4 on an **iPhone** (Safari) and an **Android** phone (Chrome).
+
+What was verified locally (Chromium 156 desktop + 375 px phone width, synthetic images):
+
+- 12 MP → 2048 px WebP, with label small print legible in the viewer
+- EXIF/GPS removed
+- transparent PNG → WebP keeps transparency; the JPEG fallback puts it on white
+- GIF, HEIC and corrupt-file messages
+- Remove and Esc
+- only one attachment flow open at a time
+- text and voice still work
+- no horizontal scroll
+
+**Not device-tested:**
+
+- iPhone HEIC photos: Safari normally converts them to JPEG for this picker. If a device
+  sends HEIC anyway, the user sees the "Only JPEG, PNG and WebP" message.
+- Very large photos on low-memory phones.
+- Android camera orientation.
+- Firefox.
 
 ## Public launch checklist (Phase 4, not done yet)
 
@@ -311,6 +418,5 @@ Known limitations:
 
 ## Not built yet
 
-Image messages (Phase 2A), backups (Phase 3), and deployment (Phase 4). The bucket, path
-rules and `send_attachment_message()` were built so images can reuse them. A later
-migration only needs to allow image MIME types and the `image` message type.
+Backups (Phase 3) and deployment (Phase 4). Unreferenced attachments (uploaded, then
+discarded before sending) also need a cleanup job, which belongs with backups.

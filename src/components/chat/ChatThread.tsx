@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisplayMessage } from "@/lib/chat/use-conversation-messages";
 import type { SenderRole } from "@/lib/types";
 import { formatDay, formatTime } from "./format";
+import { ChatImage } from "./ChatImage";
 import { VoiceNotePlayer } from "./VoiceNotePlayer";
 
 type Props = {
@@ -119,9 +120,17 @@ export function ChatThread({
                         mine
                           ? "rounded-br-md bg-brand text-white"
                           : "rounded-bl-md border border-line bg-surface text-ink"
-                      } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "audio" ? "px-2 py-2" : ""}`}
+                      } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "audio" ? "px-2 py-2" : ""} ${m.type === "image" ? "p-1" : ""}`}
                     >
-                      {m.type === "audio" ? (
+                      {m.type === "image" ? (
+                        <ChatImage
+                          supabase={supabase}
+                          path={m.attachmentPath}
+                          localUrl={m.localUrl}
+                          width={m.width}
+                          height={m.height}
+                        />
+                      ) : m.type === "audio" ? (
                         <VoiceNotePlayer
                           supabase={supabase}
                           path={m.attachmentPath}
@@ -135,7 +144,7 @@ export function ChatThread({
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 px-1 text-[11px] text-muted">
                       {m.status === "sending" ? (
-                        <span>{m.type === "audio" ? "Uploading…" : "Sending…"}</span>
+                        <span>{m.type === "text" ? "Sending…" : "Uploading…"}</span>
                       ) : null}
                       {m.status === "failed" ? (
                         <>

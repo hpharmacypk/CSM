@@ -94,6 +94,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
       <Composer
         onSend={chat.send}
         onSendVoice={chat.sendVoice}
+        onSendImage={chat.sendImage}
         disabled={chat.loading}
         placeholder="Reply to customer"
       />

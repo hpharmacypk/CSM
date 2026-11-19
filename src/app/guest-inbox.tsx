@@ -178,7 +178,12 @@ function GuestChat({
         </div>
       ) : null}
 
-      <Composer onSend={chat.send} onSendVoice={chat.sendVoice} disabled={chat.loading} />
+      <Composer
+        onSend={chat.send}
+        onSendVoice={chat.sendVoice}
+        onSendImage={chat.sendImage}
+        disabled={chat.loading}
+      />
     </main>
   );
 }

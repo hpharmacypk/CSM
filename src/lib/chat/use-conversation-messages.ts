@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Message, SenderRole } from "@/lib/types";
+import { IMAGE_MAX_UPLOAD_BYTES, type PreparedImage } from "./image";
 import {
   MEDIA_BUCKET,
   VOICE_MAX_BYTES,
@@ -28,6 +29,9 @@ export type DisplayMessage = {
   attachmentPath: string | null;
   attachmentMime: string | null;
   durationMs: number | null;
+  /** Image dimensions (for layout before the image loads). */
+  width: number | null;
+  height: number | null;
   /** Local object URL for an attachment that is still being sent. */
   localUrl: string | null;
   /** Readable reason when status is "failed". */
@@ -42,6 +46,7 @@ type PendingMessage = {
 } & (
   | { kind: "text"; body: string }
   | { kind: "audio"; recording: VoiceRecording; localUrl: string }
+  | { kind: "image"; image: PreparedImage; localUrl: string }
 );
 
 function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
@@ -271,9 +276,12 @@ export function useConversationMessages(
         return true;
       }
 
-      const { blob, mime, ext, durationMs } = item.recording;
-      if (blob.size > VOICE_MAX_BYTES) {
-        markFailed(id, "Voice note is too large to send.");
+      // Attachments (voice note or image): upload, then reference it.
+      const isImage = item.kind === "image";
+      const { blob, mime, ext } = isImage ? item.image : item.recording;
+      const noun = isImage ? "image" : "voice note";
+      if (blob.size > (isImage ? IMAGE_MAX_UPLOAD_BYTES : VOICE_MAX_BYTES)) {
+        markFailed(id, `The ${noun} is too large to send.`);
         return false;
       }
       const path = `${conversationId}/${id}.${ext}`;
@@ -283,18 +291,30 @@ export function useConversationMessages(
         .from(MEDIA_BUCKET)
         .upload(path, file, { contentType: mime, upsert: false, cacheControl: "31536000" });
       if (upload.error && !isAlreadyUploaded(upload.error)) {
-        markFailed(id, uploadErrorMessage(upload.error));
+        markFailed(id, uploadErrorMessage(upload.error, noun));
         return false;
       }
-      const { data, error } = await supabase.rpc("send_attachment_message", {
-        p_conversation_id: conversationId,
-        p_type: "audio",
-        p_attachment_path: path,
-        p_client_message_id: id,
-        p_duration_ms: Math.round(durationMs),
-      });
+      const { data, error } = await supabase.rpc(
+        "send_attachment_message",
+        isImage
+          ? {
+              p_conversation_id: conversationId,
+              p_type: "image",
+              p_attachment_path: path,
+              p_client_message_id: id,
+              p_width: item.image.width,
+              p_height: item.image.height,
+            }
+          : {
+              p_conversation_id: conversationId,
+              p_type: "audio",
+              p_attachment_path: path,
+              p_client_message_id: id,
+              p_duration_ms: Math.round(item.recording.durationMs),
+            },
+      );
       if (error || !data) {
-        markFailed(id, "Couldn't send the voice note. Tap Retry.");
+        markFailed(id, `Couldn't send the ${noun}. Tap Retry.`);
         return false;
       }
       addConfirmed([data as Message]);
@@ -342,6 +362,22 @@ export function useConversationMessages(
     [enqueue],
   );
 
+  const sendImage = useCallback(
+    async (image: PreparedImage) => {
+      const localUrl = URL.createObjectURL(image.blob);
+      localUrlsRef.current.add(localUrl);
+      return enqueue({
+        kind: "image",
+        image,
+        localUrl,
+        clientMessageId: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        status: "sending",
+      });
+    },
+    [enqueue],
+  );
+
   const retry = useCallback(
     async (clientMessageId: string) => {
       const item = pending.find((p) => p.clientMessageId === clientMessageId);
@@ -364,7 +400,7 @@ export function useConversationMessages(
 
   // Release local audio previews once they are no longer pending.
   useEffect(() => {
-    const live = new Set(pending.flatMap((p) => (p.kind === "audio" ? [p.localUrl] : [])));
+    const live = new Set(pending.flatMap((p) => (p.kind === "text" ? [] : [p.localUrl])));
     for (const url of localUrlsRef.current) {
       if (!live.has(url)) {
         URL.revokeObjectURL(url);
@@ -394,6 +430,8 @@ export function useConversationMessages(
         attachmentPath: m.attachment_path,
         attachmentMime: m.attachment_mime,
         durationMs: m.attachment_duration_ms,
+        width: m.attachment_width,
+        height: m.attachment_height,
         localUrl: null,
         failReason: null,
       })),
@@ -408,9 +446,12 @@ export function useConversationMessages(
           createdAt: p.createdAt,
           status: p.status,
           attachmentPath: null,
-          attachmentMime: p.kind === "audio" ? p.recording.mime : null,
+          attachmentMime:
+            p.kind === "audio" ? p.recording.mime : p.kind === "image" ? p.image.mime : null,
           durationMs: p.kind === "audio" ? p.recording.durationMs : null,
-          localUrl: p.kind === "audio" ? p.localUrl : null,
+          width: p.kind === "image" ? p.image.width : null,
+          height: p.kind === "image" ? p.image.height : null,
+          localUrl: p.kind === "text" ? null : p.localUrl,
           failReason: p.failReason ?? null,
         })),
     ];
@@ -425,6 +466,7 @@ export function useConversationMessages(
     loadOlder,
     send,
     sendVoice,
+    sendImage,
     retry,
     discard,
     connection,

@@ -12,6 +12,7 @@
  * The admin password is typed into a hidden prompt; it is never stored.
  * Test messages start with "[isolation-test]" (see README for cleanup SQL).
  * Voice checks upload synthetic bytes (not real audio) into the private bucket.
+ * Image checks upload a generated 1×1 PNG and synthetic JPEG/WebP bytes.
  */
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
@@ -270,6 +271,147 @@ async function adminVoiceChecks(admin, A, B, voice) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2A image checks (synthetic images only)
+// ---------------------------------------------------------------------------
+const PNG_1PX = Uint8Array.from(
+  atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
+  (c) => c.charCodeAt(0),
+);
+
+async function uploadAndSendImage(who, conversationId, { ext = "png", type = "image/png", body, cid = randomUUID(), width = 1, height = 1 } = {}) {
+  const path = `${conversationId}/${cid}.${ext}`;
+  const blob = new Blob([body ?? PNG_1PX], { type });
+  const up = await who.storage.from(BUCKET).upload(path, blob, { contentType: type, upsert: false });
+  const sent = await who.rpc("send_attachment_message", {
+    p_conversation_id: conversationId,
+    p_type: "image",
+    p_attachment_path: path,
+    p_client_message_id: cid,
+    p_width: width,
+    p_height: height,
+  });
+  return { path, cid, up, sent };
+}
+
+async function imageChecks(A, B) {
+  // Detect whether the image migration has been applied.
+  const probe = await uploadAndSendImage(A.client, A.conversationId);
+  if (probe.up.error && /mime|not supported|invalid/i.test(probe.up.error.message)) {
+    record("Images: chat-media accepts images", false, "Apply supabase/migrations/20261121000100_phase2a_image_messages.sql first");
+    return null;
+  }
+
+  const bLive = await listen(B.client, "b-img", "messages");
+  const aLive = await listen(A.client, "a-img", "messages", `conversation_id=eq.${A.conversationId}`);
+  await sleep(1000);
+
+  const img = await uploadAndSendImage(A.client, A.conversationId, { width: 1, height: 1 });
+  await check("Images: guest uploads + sends a PNG (type/mime/dims derived)", () =>
+    !img.up.error && img.sent.data?.type === "image" && img.sent.data?.attachment_mime === "image/png" &&
+    img.sent.data?.attachment_width === 1 && img.sent.data?.sender_role === "customer"
+      ? true
+      : { up: img.up.error?.message, send: img.sent.error?.message },
+  );
+  for (const [ext, type] of [["jpg", "image/jpeg"], ["webp", "image/webp"]]) {
+    await check(`Images: ${type} accepted`, async () => {
+      const r = await uploadAndSendImage(A.client, A.conversationId, { ext, type, body: syntheticAudio(2048, type), width: 640, height: 480 });
+      return !r.up.error && r.sent.data?.attachment_mime === type ? true : { up: r.up.error?.message, send: r.sent.error?.message };
+    });
+  }
+  await check("Images: retried upload + send creates exactly one message", async () => {
+    const again = await A.client.storage.from(BUCKET).upload(img.path, new Blob([PNG_1PX], { type: "image/png" }), { contentType: "image/png", upsert: false });
+    const resend = await A.client.rpc("send_attachment_message", {
+      p_conversation_id: A.conversationId, p_type: "image", p_attachment_path: img.path,
+      p_client_message_id: img.cid, p_width: 1, p_height: 1,
+    });
+    const { data } = await A.client.from("messages").select("id").eq("client_message_id", img.cid);
+    return again.error && resend.data?.id === img.sent.data?.id && data.length === 1
+      ? true
+      : { reupload: again.error?.message ?? "succeeded", resend: resend.error?.message, rows: data?.length };
+  });
+  await check("Images: history after refresh loads the image bytes", async () => {
+    const { data: s } = await A.client.auth.getSession();
+    const refreshed = newClient();
+    await refreshed.auth.setSession({ access_token: s.session.access_token, refresh_token: s.session.refresh_token });
+    const { data: rows } = await refreshed.from("messages").select("type, attachment_path").eq("conversation_id", A.conversationId).order("seq");
+    const types = new Set(rows.map((r) => r.type));
+    const row = rows.find((r) => r.attachment_path === img.path);
+    const { data: signed, error } = await refreshed.storage.from(BUCKET).createSignedUrl(row.attachment_path, 300);
+    if (error) return error.message;
+    const res = await fetch(signed.signedUrl);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return res.ok && res.headers.get("content-type")?.startsWith("image/png") && bytes.length === PNG_1PX.length &&
+      types.has("text") && types.has("audio") && types.has("image")
+      ? true
+      : { status: res.status, type: res.headers.get("content-type"), size: bytes.length, types: [...types] };
+  });
+
+  await check("Image privacy: B cannot sign, download or list A's images", async () => {
+    const s = await B.client.storage.from(BUCKET).createSignedUrl(img.path, 60);
+    const d = await B.client.storage.from(BUCKET).download(img.path);
+    const l = await B.client.storage.from(BUCKET).list(A.conversationId);
+    return s.error && d.error && (l.error || (l.data ?? []).length === 0) ? true : "B reached A's image";
+  });
+  await check("Image privacy: B cannot upload into A's folder or attach A's image", async () => {
+    const u = await B.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.png`, new Blob([PNG_1PX], { type: "image/png" }), { contentType: "image/png" });
+    const a = await B.client.rpc("send_attachment_message", {
+      p_conversation_id: B.conversationId, p_type: "image", p_attachment_path: img.path,
+      p_client_message_id: img.cid, p_width: 1, p_height: 1,
+    });
+    return u.error && a.error ? true : { upload: !u.error, attach: !a.error };
+  });
+  await check("Image privacy: no public URL access", async () => {
+    const res = await fetch(`${URL}/storage/v1/object/public/${BUCKET}/${img.path}`);
+    return !res.ok ? true : `public fetch returned ${res.status}`;
+  });
+  await check("Image boundary: GIF/SVG uploads rejected", async () => {
+    const g = await A.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.png`, new Blob(["GIF89a"], { type: "image/gif" }), { contentType: "image/gif" });
+    const s = await A.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.png`, new Blob(["<svg/>"], { type: "image/svg+xml" }), { contentType: "image/svg+xml" });
+    return g.error && s.error ? true : { gif: !g.error, svg: !s.error };
+  });
+  await check("Image boundary: file over 3 MB rejected", async () => {
+    const r = await A.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.webp`, syntheticAudio(3 * 1024 * 1024 + 1, "image/webp"), { contentType: "image/webp" });
+    return r.error ? true : "oversized image accepted";
+  });
+  await check("Image boundary: PNG stored at .jpg cannot be sent", async () => {
+    const r = await uploadAndSendImage(A.client, A.conversationId, { ext: "jpg", type: "image/png" });
+    return r.sent.error ? true : "mismatched image sent";
+  });
+  await check("Images: list preview says Photo", async () => {
+    const { data } = await A.client.from("conversations").select("last_message_preview").single();
+    return data.last_message_preview === "Photo" ? true : data;
+  });
+
+  await sleep(REALTIME_WAIT_MS);
+  await check("Image Realtime: A receives its image live", () =>
+    aLive.events.some((e) => e.new?.id === img.sent.data?.id) ? true : `${aLive.events.length} events`,
+  );
+  await check("Image Realtime: B receives no event for A's image", () =>
+    bLive.events.some((e) => e.new?.conversation_id === A.conversationId) ? "leaked" : true,
+  );
+  return { path: img.path };
+}
+
+async function adminImageChecks(admin, A, B, images) {
+  await check("Images: admin can view the guest's image", async () => {
+    const { data, error } = await admin.storage.from(BUCKET).createSignedUrl(images.path, 60);
+    if (error) return error.message;
+    return (await fetch(data.signedUrl)).ok ? true : "fetch failed";
+  });
+  const bLive = await listen(B.client, "b-admin-img", "messages", `conversation_id=eq.${B.conversationId}`);
+  await sleep(1000);
+  const r = await uploadAndSendImage(admin, B.conversationId, { ext: "webp", type: "image/webp", body: syntheticAudio(4096, "image/webp"), width: 1024, height: 768 });
+  await sleep(REALTIME_WAIT_MS);
+  await check("Images: admin sends image to guest B live; A cannot view it", async () => {
+    const a = await A.client.storage.from(BUCKET).createSignedUrl(r.path, 60);
+    const b = await B.client.storage.from(BUCKET).createSignedUrl(r.path, 60);
+    return r.sent.data?.sender_role === "admin" && bLive.events.some((e) => e.new?.id === r.sent.data?.id) && a.error && !b.error
+      ? true
+      : { send: r.sent.error?.message, live: bLive.events.length, aBlocked: !!a.error, bOk: !b.error };
+  });
+}
+
 async function main() {
   console.log(`Supabase project: ${new globalThis.URL(URL).host}\n`);
 
@@ -441,6 +583,9 @@ async function main() {
   // ------------------------------------------------------ voice notes (2B)
   const voice = await voiceChecks(A, B);
 
+  // ---------------------------------------------------------- images (2A)
+  const images = await imageChecks(A, B);
+
   // --------------------------------------------------------------- admin
   if (WITH_ADMIN) {
     const email = await askHidden("Admin email: ", false);
@@ -521,6 +666,7 @@ async function main() {
         return error ? true : "insert succeeded";
       });
       if (voice) await adminVoiceChecks(admin, A, B, voice);
+      if (images) await adminImageChecks(admin, A, B, images);
       await admin.removeAllChannels();
       await admin.auth.signOut({ scope: "local" });
     }
