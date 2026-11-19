@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+/* H-Pharmacy text branding. Swap these when the official logo/colours arrive. */
+:root {
+  --canvas: #f4f7f6;
+  --surface: #ffffff;
+  --ink: #12211d;
+  --muted: #5d6f6a;
+  --line: #dde5e2;
+  --brand: #0f7a5f;
+  --brand-dark: #0b5f4a;
+  --brand-soft: #e3f3ed;
+  --danger: #c0392b;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-soft: var(--brand-soft);
+  --color-danger: var(--danger);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
