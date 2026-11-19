@@ -11,6 +11,7 @@
  *
  * The admin password is typed into a hidden prompt; it is never stored.
  * Test messages start with "[isolation-test]" (see README for cleanup SQL).
+ * Voice checks upload synthetic bytes (not real audio) into the private bucket.
  */
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
@@ -99,6 +100,174 @@ function askHidden(question, hidden) {
       resolve(answer.trim());
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2B voice-note checks (synthetic audio bytes, never real recordings)
+// ---------------------------------------------------------------------------
+const BUCKET = "chat-media";
+
+/** Synthetic "audio" payload: random bytes tagged with an audio MIME type. */
+function syntheticAudio(bytes = 4096, type = "audio/webm") {
+  const buf = new Uint8Array(bytes);
+  for (let i = 0; i < bytes; i++) buf[i] = (i * 31 + 7) & 0xff;
+  return new Blob([buf], { type });
+}
+
+async function uploadAndSendVoice(who, conversationId, { ext = "webm", type = "audio/webm", bytes = 4096, durationMs = 3000, cid = randomUUID() } = {}) {
+  const path = `${conversationId}/${cid}.${ext}`;
+  const up = await who.storage.from(BUCKET).upload(path, syntheticAudio(bytes, type), { contentType: type, upsert: false });
+  const sent = await who.rpc("send_attachment_message", {
+    p_conversation_id: conversationId,
+    p_type: "audio",
+    p_attachment_path: path,
+    p_client_message_id: cid,
+    p_duration_ms: durationMs,
+  });
+  return { path, cid, up, sent };
+}
+
+async function voiceChecks(A, B) {
+  const { data: bucketProbe, error: bucketErr } = await A.client.storage.from(BUCKET).list(A.conversationId);
+  if (bucketErr && /not found/i.test(bucketErr.message)) {
+    record("Voice notes: chat-media bucket exists", false, "Apply supabase/migrations/20261120000100_phase2b_voice_notes.sql first");
+    return null;
+  }
+  void bucketProbe;
+
+  const bLive = await listen(B.client, "b-voice", "messages");
+  const aLive = await listen(A.client, "a-voice", "messages", `conversation_id=eq.${A.conversationId}`);
+  await sleep(1000);
+
+  const v = await uploadAndSendVoice(A.client, A.conversationId, { durationMs: 7000 });
+  await check("Voice: guest uploads + sends a voice note to own thread", () =>
+    !v.up.error && v.sent.data?.type === "audio" && v.sent.data?.sender_role === "customer" &&
+    v.sent.data?.attachment_mime === "audio/webm" && v.sent.data?.attachment_duration_ms === 7000
+      ? true
+      : { upload: v.up.error?.message, send: v.sent.error?.message },
+  );
+
+  await check("Voice: retried upload + send creates exactly one message", async () => {
+    const again = await A.client.storage.from(BUCKET).upload(v.path, syntheticAudio(), { contentType: "audio/webm", upsert: false });
+    const resend = await A.client.rpc("send_attachment_message", {
+      p_conversation_id: A.conversationId, p_type: "audio", p_attachment_path: v.path,
+      p_client_message_id: v.cid, p_duration_ms: 7000,
+    });
+    const { data } = await A.client.from("messages").select("id").eq("client_message_id", v.cid);
+    const conflict = again.error && (Number(again.error.statusCode ?? again.error.status) === 409 || /exists|duplicate/i.test(again.error.message));
+    return conflict && resend.data?.id === v.sent.data?.id && data.length === 1
+      ? true
+      : { reupload: again.error?.message ?? "succeeded", resend: resend.error?.message, rows: data?.length };
+  });
+
+  await check("Voice: playback after refresh (new client, same session) returns the audio", async () => {
+    const { data: s } = await A.client.auth.getSession();
+    const refreshed = newClient();
+    await refreshed.auth.setSession({ access_token: s.session.access_token, refresh_token: s.session.refresh_token });
+    const { data: rows } = await refreshed.from("messages").select("attachment_path, attachment_mime").eq("id", v.sent.data.id);
+    const { data: signed, error } = await refreshed.storage.from(BUCKET).createSignedUrl(rows[0].attachment_path, 300);
+    if (error) return error.message;
+    const res = await fetch(signed.signedUrl);
+    const body = new Uint8Array(await res.arrayBuffer());
+    return res.ok && (res.headers.get("content-type") ?? "").startsWith("audio/webm") && body.length === 4096
+      ? true
+      : { status: res.status, type: res.headers.get("content-type"), size: body.length };
+  });
+
+  await check("Voice privacy: B cannot sign, download or list A's audio", async () => {
+    const s = await B.client.storage.from(BUCKET).createSignedUrl(v.path, 60);
+    const d = await B.client.storage.from(BUCKET).download(v.path);
+    const l = await B.client.storage.from(BUCKET).list(A.conversationId);
+    return s.error && d.error && (l.error || (l.data ?? []).length === 0)
+      ? true
+      : { signed: !!s.data, downloaded: !!d.data, listed: l.data?.length };
+  });
+  await check("Voice privacy: B cannot upload into A's folder", async () => {
+    const r = await B.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.webm`, syntheticAudio(), { contentType: "audio/webm" });
+    return r.error ? true : "upload succeeded";
+  });
+  await check("Voice privacy: B cannot attach A's object to B's thread", async () => {
+    const r = await B.client.rpc("send_attachment_message", {
+      p_conversation_id: B.conversationId, p_type: "audio", p_attachment_path: v.path,
+      p_client_message_id: v.cid, p_duration_ms: 1000,
+    });
+    return r.error ? true : "send succeeded";
+  });
+  await check("Voice privacy: no public URL access to the private bucket", async () => {
+    const res = await fetch(`${URL}/storage/v1/object/public/${BUCKET}/${v.path}`);
+    return !res.ok ? true : `public fetch returned ${res.status}`;
+  });
+  await check("Voice privacy: signed-out browser cannot sign A's audio", async () => {
+    const r = await newClient().storage.from(BUCKET).createSignedUrl(v.path, 60);
+    return r.error ? true : "signed URL issued";
+  });
+
+  await check("Voice storage boundary: non-audio type rejected", async () => {
+    const r = await A.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.webm`, new Blob(["<html>"], { type: "text/html" }), { contentType: "text/html" });
+    return r.error ? true : "text/html accepted";
+  });
+  await check("Voice storage boundary: file over 3 MB rejected", async () => {
+    const r = await A.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.webm`, syntheticAudio(3 * 1024 * 1024 + 1), { contentType: "audio/webm" });
+    return r.error ? true : "oversized file accepted";
+  });
+  await check("Voice storage boundary: disallowed file name rejected", async () => {
+    const r = await A.client.storage.from(BUCKET).upload(`${A.conversationId}/${randomUUID()}.mp3`, syntheticAudio(), { contentType: "audio/webm" });
+    return r.error ? true : ".mp3 path accepted";
+  });
+  await check("Voice: Safari-style audio/mp4 (.m4a) accepted", async () => {
+    const r = await uploadAndSendVoice(A.client, A.conversationId, { ext: "m4a", type: "audio/mp4" });
+    return !r.up.error && r.sent.data?.attachment_mime === "audio/mp4" ? true : { up: r.up.error?.message, send: r.sent.error?.message };
+  });
+  await check("Voice: browser cannot overwrite or delete audio", async () => {
+    const u = await A.client.storage.from(BUCKET).upload(v.path, syntheticAudio(10), { contentType: "audio/webm", upsert: true });
+    const d = await A.client.storage.from(BUCKET).remove([v.path]);
+    const still = await A.client.storage.from(BUCKET).createSignedUrl(v.path, 60);
+    const res = still.data ? await fetch(still.data.signedUrl) : null;
+    const size = res ? (await res.arrayBuffer()).byteLength : 0;
+    return u.error && size === 4096 ? true : { overwrite: u.error?.message ?? "succeeded", removed: d.data?.length, size };
+  });
+  await check("Voice: admin unread + list preview updated", async () => {
+    const { data } = await A.client.from("conversations").select("last_message_preview").single();
+    return /^Voice note/.test(data.last_message_preview ?? "") ? true : data;
+  });
+
+  await sleep(REALTIME_WAIT_MS);
+  await check("Voice Realtime: A receives its voice note live", () =>
+    aLive.events.some((e) => e.new?.id === v.sent.data?.id) ? true : `${aLive.events.length} events`,
+  );
+  await check("Voice Realtime: B receives no event for A's voice note", () =>
+    bLive.events.some((e) => e.new?.conversation_id === A.conversationId) ? "leaked" : true,
+  );
+  return { path: v.path };
+}
+
+async function adminVoiceChecks(admin, A, B, voice) {
+  await check("Voice: admin can play the guest's voice note", async () => {
+    const { data, error } = await admin.storage.from(BUCKET).createSignedUrl(voice.path, 60);
+    if (error) return error.message;
+    const res = await fetch(data.signedUrl);
+    return res.ok ? true : res.status;
+  });
+  const bLive = await listen(B.client, "b-admin-voice", "messages", `conversation_id=eq.${B.conversationId}`);
+  const aLive = await listen(A.client, "a-admin-voice", "messages");
+  await sleep(1000);
+  const r = await uploadAndSendVoice(admin, B.conversationId, { ext: "ogg", type: "audio/ogg", durationMs: 2500 });
+  await sleep(REALTIME_WAIT_MS);
+  await check("Voice: admin sends a voice note to guest B (role admin)", () =>
+    !r.up.error && r.sent.data?.sender_role === "admin" ? true : { up: r.up.error?.message, send: r.sent.error?.message },
+  );
+  await check("Voice Realtime: B receives the admin voice note; A does not", () =>
+    bLive.events.some((e) => e.new?.id === r.sent.data?.id) &&
+    !aLive.events.some((e) => e.new?.conversation_id === B.conversationId)
+      ? true
+      : { b: bLive.events.length, aLeaks: aLive.events.filter((e) => e.new?.conversation_id === B.conversationId).length },
+  );
+  await check("Voice: B can play the admin's voice note; A cannot", async () => {
+    const b = await B.client.storage.from(BUCKET).createSignedUrl(r.path, 60);
+    const a = await A.client.storage.from(BUCKET).createSignedUrl(r.path, 60);
+    const res = b.data ? await fetch(b.data.signedUrl) : null;
+    return res?.ok && a.error ? true : { b: b.error?.message, a: a.data ? "A got a URL" : a.error?.message };
+  });
 }
 
 async function main() {
@@ -269,6 +438,9 @@ async function main() {
     record("Realtime subscriptions", false, e.message);
   }
 
+  // ------------------------------------------------------ voice notes (2B)
+  const voice = await voiceChecks(A, B);
+
   // --------------------------------------------------------------- admin
   if (WITH_ADMIN) {
     const email = await askHidden("Admin email: ", false);
@@ -348,6 +520,7 @@ async function main() {
         });
         return error ? true : "insert succeeded";
       });
+      if (voice) await adminVoiceChecks(admin, A, B, voice);
       await admin.removeAllChannels();
       await admin.auth.signOut({ scope: "local" });
     }

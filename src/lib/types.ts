@@ -9,6 +9,9 @@ export type Message = {
   type: "text" | "image" | "audio";
   body: string | null;
   attachment_path: string | null;
+  attachment_mime: string | null;
+  attachment_size: number | null;
+  attachment_duration_ms: number | null;
   client_message_id: string;
   created_at: string;
 };

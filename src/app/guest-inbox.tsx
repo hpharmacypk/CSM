@@ -148,6 +148,7 @@ function GuestChat({
         <CenteredNote>Loading messages…</CenteredNote>
       ) : (
         <ChatThread
+          supabase={supabase}
           messages={chat.messages}
           viewerRole="customer"
           otherPartyLabel="H-Pharmacy"
@@ -177,7 +178,7 @@ function GuestChat({
         </div>
       ) : null}
 
-      <Composer onSend={chat.send} disabled={chat.loading} />
+      <Composer onSend={chat.send} onSendVoice={chat.sendVoice} disabled={chat.loading} />
     </main>
   );
 }

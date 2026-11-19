@@ -69,6 +69,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
         </div>
       ) : (
         <ChatThread
+          supabase={supabase}
           messages={chat.messages}
           viewerRole="admin"
           otherPartyLabel="Customer"
@@ -90,7 +91,12 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
         </div>
       ) : null}
 
-      <Composer onSend={chat.send} disabled={chat.loading} placeholder="Reply to customer" />
+      <Composer
+        onSend={chat.send}
+        onSendVoice={chat.sendVoice}
+        disabled={chat.loading}
+        placeholder="Reply to customer"
+      />
     </div>
   );
 }

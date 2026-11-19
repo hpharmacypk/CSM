@@ -1,11 +1,14 @@
 "use client";
 
 import { Fragment, useLayoutEffect, useRef, type ReactNode } from "react";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisplayMessage } from "@/lib/chat/use-conversation-messages";
 import type { SenderRole } from "@/lib/types";
 import { formatDay, formatTime } from "./format";
+import { VoiceNotePlayer } from "./VoiceNotePlayer";
 
 type Props = {
+  supabase: SupabaseClient;
   messages: DisplayMessage[];
   viewerRole: SenderRole;
   hasOlder: boolean;
@@ -18,6 +21,7 @@ type Props = {
 };
 
 export function ChatThread({
+  supabase,
   messages,
   viewerRole,
   hasOlder,
@@ -115,15 +119,27 @@ export function ChatThread({
                         mine
                           ? "rounded-br-md bg-brand text-white"
                           : "rounded-bl-md border border-line bg-surface text-ink"
-                      } ${m.status === "failed" ? "opacity-70" : ""}`}
+                      } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "audio" ? "px-2 py-2" : ""}`}
                     >
-                      {m.body}
+                      {m.type === "audio" ? (
+                        <VoiceNotePlayer
+                          supabase={supabase}
+                          path={m.attachmentPath}
+                          localUrl={m.localUrl}
+                          mime={m.attachmentMime}
+                          durationMs={m.durationMs}
+                        />
+                      ) : (
+                        m.body
+                      )}
                     </div>
-                    <div className="mt-0.5 flex items-center gap-2 px-1 text-[11px] text-muted">
-                      {m.status === "sending" ? <span>Sending…</span> : null}
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 px-1 text-[11px] text-muted">
+                      {m.status === "sending" ? (
+                        <span>{m.type === "audio" ? "Uploading…" : "Sending…"}</span>
+                      ) : null}
                       {m.status === "failed" ? (
                         <>
-                          <span className="text-danger">Not sent</span>
+                          <span className="text-danger">{m.failReason ?? "Not sent"}</span>
                           <button
                             type="button"
                             onClick={() => onRetry(m.clientMessageId)}
