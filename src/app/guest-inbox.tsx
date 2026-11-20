@@ -203,6 +203,11 @@ function GuestChat({
           onViewed={(seq) => void chat.markViewed(seq)}
           onHideForMe={chat.hideForMe}
           onDeleteForEveryone={chat.deleteForEveryone}
+          pinnedId={chat.pinnedId}
+          pinnedMessage={chat.pinnedMessage}
+          onPin={chat.pinMessage}
+          onUnpin={chat.unpinMessage}
+          onEnsureLoaded={chat.ensureLoaded}
           emptyState={
             <div className="max-w-sm text-center">
               <p className="text-base font-semibold text-ink">How can we help?</p>
@@ -228,6 +233,7 @@ function GuestChat({
         onSend={chat.send}
         onSendVoice={chat.sendVoice}
         onSendImage={chat.sendImage}
+        onSendLocation={chat.sendLocation}
         disabled={chat.loading}
       />
     </main>

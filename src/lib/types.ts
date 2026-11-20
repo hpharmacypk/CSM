@@ -6,7 +6,7 @@ export type Message = {
   conversation_id: string;
   sender_role: SenderRole;
   sender_user_id: string | null;
-  type: "text" | "image" | "audio";
+  type: "text" | "image" | "audio" | "location";
   body: string | null;
   attachment_path: string | null;
   attachment_mime: string | null;
@@ -16,6 +16,9 @@ export type Message = {
   attachment_height: number | null;
   deleted_at: string | null;
   deleted_by: string | null;
+  location_lat: number | null;
+  location_lng: number | null;
+  location_accuracy_m: number | null;
   client_message_id: string;
   created_at: string;
 };

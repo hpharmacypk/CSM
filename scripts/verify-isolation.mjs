@@ -13,6 +13,7 @@
  * Test messages start with "[isolation-test]" (see README for cleanup SQL).
  * Voice checks upload synthetic bytes (not real audio) into the private bucket.
  * Image checks upload a generated 1×1 PNG and synthetic JPEG/WebP bytes.
+ * Location checks use public landmarks / synthetic coordinates only.
  */
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
@@ -636,6 +637,165 @@ async function adminFeatureChecks(admin, A, B, f) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Chat pins (admin), message pins (shared), location messages
+// Synthetic coordinates / public landmarks only.
+// ---------------------------------------------------------------------------
+const LANDMARK = { name: "Mazar-e-Quaid, Karachi", lat: 24.8752, lng: 67.04 };
+const LANDMARK_2 = { name: "Faisal Mosque, Islamabad", lat: 33.7295, lng: 73.0373 };
+
+async function sendLocation(client, conversationId, lat, lng, accuracy = null, cid = randomUUID()) {
+  return client.rpc("send_location_message", {
+    p_conversation_id: conversationId,
+    p_latitude: lat,
+    p_longitude: lng,
+    p_client_message_id: cid,
+    p_accuracy_m: accuracy,
+  });
+}
+
+async function pinLocationChecks(A, B) {
+  const probe = await A.client.rpc("unpin_message", { p_conversation_id: A.conversationId });
+  if (probe.error && /could not find|does not exist|schema cache/i.test(probe.error.message)) {
+    record("Pins/location migrations applied", false, "Apply the three 20261123… migrations first");
+    return null;
+  }
+
+  // ---- Locations (guest side)
+  const aLive = await listen(A.client, "a-loc", "messages", `conversation_id=eq.${A.conversationId}`);
+  const bAll = await listen(B.client, "b-loc", "messages");
+  await sleep(1000);
+  const { data: loc, error: locErr } = await sendLocation(A.client, A.conversationId, LANDMARK.lat, LANDMARK.lng, 15);
+  await check(`Location: guest sends ${LANDMARK.name}`, () =>
+    !locErr && loc.type === "location" && loc.location_lat === LANDMARK.lat && loc.location_lng === LANDMARK.lng && loc.sender_role === "customer"
+      ? true : locErr?.message ?? loc,
+  );
+  await check("Location: retry with the same client id creates one message", async () => {
+    const cid = randomUUID();
+    const r1 = await sendLocation(A.client, A.conversationId, 1.5, 2.5, null, cid);
+    const r2 = await sendLocation(A.client, A.conversationId, 1.5, 2.5, null, cid);
+    const { data } = await A.client.from("messages").select("id").eq("client_message_id", cid);
+    return r1.data?.id === r2.data?.id && data.length === 1 ? true : { r1: r1.error?.message, r2: r2.error?.message, rows: data?.length };
+  });
+  await check("Location: invalid coordinates rejected (range, NaN→null, missing)", async () => {
+    const bad = [[91, 0], [0, 181], [-90.5, 0], [Number.NaN, 0], [0, Number.POSITIVE_INFINITY], [null, 1]];
+    const res = [];
+    for (const [lat, lng] of bad) res.push(!!(await sendLocation(A.client, A.conversationId, lat, lng)).error);
+    return res.every(Boolean) ? true : res;
+  });
+  await check("Location: other guest cannot send into or read A's chat", async () => {
+    const s = await sendLocation(B.client, A.conversationId, 1, 1);
+    const { data } = await B.client.from("messages").select("id").eq("id", loc.id);
+    return s.error && (data ?? []).length === 0 ? true : { send: !s.error, read: data?.length };
+  });
+  await check("Location: history after refresh keeps the coordinates", async () => {
+    const { data: sess } = await A.client.auth.getSession();
+    const fresh = newClient();
+    await fresh.auth.setSession({ access_token: sess.session.access_token, refresh_token: sess.session.refresh_token });
+    const { data } = await fresh.from("messages").select("type, location_lat, location_lng, location_accuracy_m").eq("id", loc.id).single();
+    return data.type === "location" && data.location_lat === LANDMARK.lat && data.location_lng === LANDMARK.lng ? true : data;
+  });
+
+  // ---- Message pins (guest side)
+  const { data: older } = await send(A.client, A.conversationId, `${TAG} older message to pin`);
+  for (let i = 0; i < 3; i++) await send(A.client, A.conversationId, `${TAG} filler ${i}`);
+  await check("Pin: guest pins an older message", async () => {
+    const { error } = await A.client.rpc("pin_message", { p_message_id: older.id });
+    const { data } = await A.client.from("conversations").select("pinned_message_id").single();
+    return !error && data.pinned_message_id === older.id ? true : error?.message ?? data;
+  });
+  await check("Pin: other guest cannot pin/unpin or see A's pin", async () => {
+    const p = await B.client.rpc("pin_message", { p_message_id: older.id });
+    const u = await B.client.rpc("unpin_message", { p_conversation_id: A.conversationId });
+    const { data } = await B.client.from("conversations").select("pinned_message_id").eq("id", A.conversationId);
+    return p.error && u.error && (data ?? []).length === 0 ? true : { pin: !p.error, unpin: !u.error, see: data?.length };
+  });
+  await check("Pin: a location message can be pinned (replaces the old pin)", async () => {
+    const { error } = await A.client.rpc("pin_message", { p_message_id: loc.id });
+    const { data } = await A.client.from("conversations").select("pinned_message_id").single();
+    return !error && data.pinned_message_id === loc.id ? true : error?.message ?? data;
+  });
+  await check("Pin: delete for everyone clears the pin and the coordinates", async () => {
+    const { data: d, error } = await A.client.rpc("delete_message_for_everyone", { p_message_id: loc.id });
+    const { data } = await A.client.from("conversations").select("pinned_message_id").single();
+    return !error && d.location_lat === null && d.location_lng === null && data.pinned_message_id === null ? true : { error: error?.message, d, data };
+  });
+  await sleep(REALTIME_WAIT_MS);
+  await check("Location Realtime: A receives its location live; B receives nothing", () =>
+    aLive.events.some((e) => e.new?.id === loc.id) && !bAll.events.some((e) => e.new?.conversation_id === A.conversationId)
+      ? true : { a: aLive.events.length, bLeaks: bAll.events.filter((e) => e.new?.conversation_id === A.conversationId).length },
+  );
+
+  // ---- Chat pins are admin-only
+  await check("Chat pins: guests cannot read, set or insert", async () => {
+    const r = await B.client.from("conversation_pins").select("*");
+    const s = await B.client.rpc("set_conversation_pinned", { p_conversation_id: B.conversationId, p_pinned: true });
+    const i = await B.client.from("conversation_pins").insert({ conversation_id: B.conversationId });
+    return (r.error || r.data.length === 0) && s.error && i.error ? true : { read: r.data?.length, set: !s.error, insert: !i.error };
+  });
+  const bPins = await listen(B.client, "b-chat-pins", "conversation_pins").catch(() => null);
+  return { older, bPins };
+}
+
+async function adminPinLocationChecks(admin, A, B, f) {
+  // ---- Admin location to guest, live
+  const aLive = await listen(A.client, "a-admin-loc", "messages", `conversation_id=eq.${A.conversationId}`);
+  await sleep(1000);
+  const { data: al, error } = await sendLocation(admin, A.conversationId, LANDMARK_2.lat, LANDMARK_2.lng);
+  await sleep(REALTIME_WAIT_MS);
+  await check(`Location: admin sends ${LANDMARK_2.name}; guest receives it live`, () =>
+    !error && al.sender_role === "admin" && aLive.events.some((e) => e.new?.id === al.id && e.new?.location_lat === LANDMARK_2.lat)
+      ? true : { error: error?.message, events: aLive.events.length },
+  );
+
+  // ---- Shared pin, live to the guest; Delete for me hides only the hider's banner
+  const pinLive = await listen(A.client, "a-pin-live", "conversations", `id=eq.${A.conversationId}`);
+  await sleep(1000);
+  await check("Pin: admin pins; guest sees the same pin live", async () => {
+    const { error: e } = await admin.rpc("pin_message", { p_message_id: f.older.id });
+    await sleep(REALTIME_WAIT_MS);
+    const live = pinLive.events.some((ev) => ev.new?.pinned_message_id === f.older.id);
+    const { data } = await A.client.from("conversations").select("pinned_message_id").single();
+    return !e && live && data.pinned_message_id === f.older.id ? true : { e: e?.message, live, data };
+  });
+  await check("Pin: admin 'Delete for me' hides the pinned content only for the admin", async () => {
+    await admin.rpc("hide_message_for_me", { p_message_id: f.older.id });
+    const { data: ad } = await admin.from("messages").select("id").eq("id", f.older.id);
+    const { data: gu } = await A.client.from("messages").select("body").eq("id", f.older.id);
+    return ad.length === 0 && gu.length === 1 ? true : { admin: ad.length, guest: gu.length };
+  });
+
+  // ---- Chat pins: order, label filter, persistence
+  await check("Chat pins: pinned chat listed first, in the main list and a label filter", async () => {
+    const { error: e1 } = await admin.rpc("set_conversation_pinned", { p_conversation_id: B.conversationId, p_pinned: true });
+    const { data: all } = await admin.rpc("admin_list_conversations");
+    const { data: L } = await admin.from("labels").insert({ name: `${TAG} pin filter ${randomUUID().slice(0, 6)}` }).select().single();
+    const custIds = [];
+    for (const c of [A, B]) {
+      const { data: row } = await admin.from("conversations").select("customer_id").eq("id", c.conversationId).single();
+      custIds.push(row.customer_id);
+    }
+    await admin.from("customer_labels").insert(custIds.map((cid) => ({ customer_id: cid, label_id: L.id })));
+    const { data: filtered } = await admin.rpc("admin_list_conversations", { p_label_id: L.id });
+    await admin.from("labels").delete().eq("id", L.id);
+    const firstAll = all?.[0];
+    return !e1 && firstAll?.id === B.conversationId && firstAll.pinned_at && filtered?.[0]?.id === B.conversationId
+      ? true : { e1: e1?.message, first: firstAll?.id, filteredFirst: filtered?.[0]?.id };
+  });
+  await check("Chat pins: persist for a fresh admin session (after refresh)", async () => {
+    const { data: s } = await admin.auth.getSession();
+    const fresh = newClient();
+    await fresh.auth.setSession({ access_token: s.session.access_token, refresh_token: s.session.refresh_token });
+    const { data } = await fresh.rpc("admin_list_conversations", { p_conversation_id: B.conversationId });
+    return data?.[0]?.pinned_at ? true : data;
+  });
+  await sleep(REALTIME_WAIT_MS);
+  await check("Chat pins: guests receive no chat-pin events", () =>
+    (f.bPins?.events.length ?? 0) === 0 ? true : `${f.bPins.events.length} events`,
+  );
+  await admin.rpc("set_conversation_pinned", { p_conversation_id: B.conversationId, p_pinned: false });
+}
+
 async function main() {
   console.log(`Supabase project: ${new globalThis.URL(URL).host}\n`);
 
@@ -813,6 +973,9 @@ async function main() {
   // -------------------- unread, deletion, profiles, labels (guest side)
   const features = await featureChecks(A, B);
 
+  // ------------------------ chat pins, message pins, locations (guest side)
+  const pinsLoc = await pinLocationChecks(A, B);
+
   // --------------------------------------------------------------- admin
   if (WITH_ADMIN) {
     const email = await askHidden("Admin email: ", false);
@@ -895,6 +1058,7 @@ async function main() {
       if (voice) await adminVoiceChecks(admin, A, B, voice);
       if (images) await adminImageChecks(admin, A, B, images);
       if (features) await adminFeatureChecks(admin, A, B, features);
+      if (pinsLoc) await adminPinLocationChecks(admin, A, B, pinsLoc);
       await admin.removeAllChannels();
       await admin.auth.signOut({ scope: "local" });
     }

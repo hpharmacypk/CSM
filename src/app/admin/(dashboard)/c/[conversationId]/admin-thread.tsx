@@ -136,6 +136,11 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
           onViewed={(seq) => void chat.markViewed(seq)}
           onHideForMe={chat.hideForMe}
           onDeleteForEveryone={chat.deleteForEveryone}
+          pinnedId={chat.pinnedId}
+          pinnedMessage={chat.pinnedMessage}
+          onPin={chat.pinMessage}
+          onUnpin={chat.unpinMessage}
+          onEnsureLoaded={chat.ensureLoaded}
           emptyState={<p className="text-sm text-muted">No messages in this conversation yet.</p>}
         />
       )}
@@ -153,6 +158,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
         onSend={chat.send}
         onSendVoice={chat.sendVoice}
         onSendImage={chat.sendImage}
+        onSendLocation={chat.sendLocation}
         disabled={chat.loading}
         placeholder="Reply to customer"
       />

@@ -6,7 +6,8 @@ sees every conversation by recent activity with unread counts, and replies live.
 
 Requirements and phases: [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
 **Current status: Phase 1 (text chat), Phase 2B (voice notes), Phase 2A (images), and the
-unread fix, message deletion, customer profiles and admin labels update.**
+unread fix, message deletion, customer profiles and admin labels update, and chat pins,
+message pins and location messages.**
 Backups and deployment are later phases.
 
 ## Stack
@@ -44,6 +45,9 @@ supabase/migrations/20261122000100…000400_*.sql            read boundary, dele
 src/app/guest-profile.tsx, src/components/Avatar.tsx       "My profile" panel, private profile photos
 src/app/admin/(dashboard)/labels/                         admin Labels section (/admin/labels)
 src/app/admin/(dashboard)/c/[conversationId]/customer-labels.tsx  assign labels in a conversation
+supabase/migrations/20261123000100…000300_*.sql            chat pins, message pins, locations
+src/components/chat/LocationPicker.tsx, MapPicker.tsx     Send location (Leaflet + OpenStreetMap)
+src/components/chat/LocationCard.tsx                      location card + Open in Google Maps
 src/components/chat/VoiceRecorder.tsx, VoiceNotePlayer.tsx  record/preview/send, inline playback
 src/lib/chat/voice.ts                                      formats, limits, readable errors
 supabase/snippets/add_admin.sql                           grant admin to one account (run by hand)
@@ -553,6 +557,121 @@ Enforced in the database:
 9. **Regression:** text, image and voice still send, play and survive refresh, and two guests
    still can't see each other's chats.
 
+## Update: chat pins, message pins, location messages
+
+### Migrations (apply in this order, after the seven earlier ones)
+
+1. `supabase/migrations/20261123000100_admin_chat_pins.sql`
+2. `supabase/migrations/20261123000200_message_pins.sql`
+3. `supabase/migrations/20261123000300_location_messages.sql`
+
+These are forward-only. Earlier files are unchanged, and existing messages, media, profiles,
+labels and read state are preserved. This was checked with an upgrade test that loads data
+with the seven earlier migrations and then applies these three.
+
+**SQL Editor:** run each file in order. **Or CLI:**
+
+```powershell
+npx supabase db push
+```
+
+Restart `npm run dev`. There are no new environment variables.
+
+### Map setup: nothing to configure
+
+- **Map:** [Leaflet](https://leafletjs.com) 1.9.4 (BSD-2 licence, npm package) with the public
+  **OpenStreetMap** tile server. No API key, account or billing is needed.
+- **Tile usage policy:** OpenStreetMap's policy applies. The map credit ("© OpenStreetMap
+  contributors") must stay visible, which it is. Use must stay light, with no bulk downloading
+  or offline caching, and there's no uptime guarantee. That's fine for a low-traffic pilot. For
+  heavy production use, switch to a commercial or self-hosted tile provider; only the tile URL
+  in `src/components/chat/MapPicker.tsx` changes.
+- **Open in Google Maps:** a plain link
+  (`https://www.google.com/maps/search/?api=1&query=lat,lng`), which needs no key and has no cost.
+- **Not used:** Google Maps JavaScript API, geocoding (no address lookup), and live tracking.
+
+### 1. Admin chat pins
+
+- In the admin conversation list, each row's **⋯** menu has **Pin chat** / **Unpin chat**.
+  Pinned chats get a 📌.
+- Pinned chats are listed first, in the main list and when filtering by label. Within each
+  group the existing order (newest activity first) is kept.
+- Pins are stored in `public.conversation_pins` and shared by all admins. They survive refresh
+  and signing in again.
+- **Admin-only:** row-level security allows admins only, writes go only through
+  `set_conversation_pinned()`, and the table is not published to Realtime. Guests can't see or
+  change pins.
+
+### 2. Message pins (shared, one per chat)
+
+- Each message's **⋯** menu has **Pin message** / **Unpin message**, for the guest and the
+  admin. Replacing an existing pin asks for confirmation.
+- A **Pinned message** banner at the top of both sides stays in sync live and comes back after
+  refresh. Tapping it loads any older history needed, scrolls to the original message and
+  highlights it. **Unpin** is on the banner.
+- `conversations.pinned_message_id` is set only by `pin_message()` and `unpin_message()`. The
+  database checks the caller can see the message: same conversation, not deleted, and not
+  hidden by the caller.
+- The banner's content is always read through the message access rules. **Delete for me** on
+  the pinned message hides the banner only for that person. **Delete for everyone** clears the
+  pin for both sides.
+
+### 3. Location messages
+
+- The guest and admin composers have a **Send location** button (pin icon). It offers:
+  - **Use current location:** device permission is requested only at that moment, with one
+    reading and no tracking. If permission is denied, unavailable or too slow, a readable
+    message appears and **Choose on map** stays available.
+  - **Choose on map:** tap the map to drop a pin, or drag the pin to adjust it.
+
+  The chosen point and its coordinates are shown, with a "Check in Google Maps" link. Nothing
+  is saved until you press **Send**, and **Cancel** discards it.
+- A single latitude/longitude point (plus device accuracy, if used) is sent with
+  `send_location_message()`. It is validated twice: by the function (−90..90 and −180..180,
+  rejecting missing values, NaN and ±Infinity) and by table CHECK constraints. Retries are
+  idempotent.
+- In chat and history, a **location card** shows the coordinates, the accuracy and **Open in
+  Google Maps**. Location messages support pin, Delete for me and Delete for everyone; the last
+  clears the coordinates and any pin. The list preview reads "Location".
+
+### Fixes found while testing
+
+- **Full-history reload on first connection:** the first Realtime connection re-fetched the
+  whole history, up to 1,000 messages, instead of the newest 50. Fixed in
+  `use-conversation-messages.ts`.
+- **Leaflet credit link:** it opened in the same tab, taking the user out of the chat. It now
+  opens in a new tab.
+
+### Browser test checklist (after applying the migrations)
+
+1. **Chat pins:**
+   - As admin, use ⋯ → **Pin chat** on an older conversation. It moves to the top with 📌.
+   - Refresh, then sign out and in again. It stays pinned.
+   - Filter by a label the chat has. It's still listed first.
+   - **Unpin chat** returns it to its normal place.
+   - The guest sees nothing about chat pins.
+2. **Message pins:**
+   - The guest pins a message. The admin's open thread shows the same banner live.
+   - The admin pins another message, confirms **Replace pin**, and the guest's banner updates.
+   - Refresh both sides. The banner is still there.
+3. **Older message:** send 60+ messages, pin an early one, refresh, then tap the banner. History
+   loads and the view scrolls to the message and highlights it.
+4. **Deletion and pins:**
+   - Delete for me on the pinned message: the banner disappears only for you.
+   - Delete for everyone on the pinned message (by its sender): both banners disappear.
+5. **Location, guest to admin:**
+   - **Send location → Use current location**, allow permission, check the preview, then
+     **Send**. The admin sees the card live, and **Open in Google Maps** opens the right place.
+6. **Location, admin to guest:**
+   - **Send location → Choose on map**, tap, drag the pin, then **Send**. The guest sees it live
+     and after refresh.
+7. **Permission denied:** block location for the site, then choose **Use current location**.
+   The message appears, and **Choose on map** still works. Check that **Cancel** sends nothing.
+8. **Location pin and delete:** pin a location message (the banner reads "Shared location"),
+   then delete it for everyone. The card and the banner clear.
+9. **Regression:** text, image, voice, profile, labels, unread badges and two-guest isolation
+   still work.
+
 ## Public launch checklist (Phase 4, not done yet)
 
 - [ ] **CAPTCHA for anonymous sign-ins.** Enable Cloudflare Turnstile under
@@ -568,6 +687,8 @@ Enforced in the database:
 - [ ] Re-run `npm run verify:isolation -- --admin` and the manual checks against the live URL.
 - [ ] Backups and restore test (Phase 3).
 - [ ] Plan for anonymous-user growth (Supabase Free quotas).
+- [ ] Review map tile usage: public OpenStreetMap tiles are fine for the pilot; move to a
+      commercial or self-hosted tile provider if traffic grows (only the tile URL changes).
 
 ## Not built yet
 

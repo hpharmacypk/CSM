@@ -37,6 +37,10 @@ export type DisplayMessage = {
   /** Image dimensions (for layout before the image loads). */
   width: number | null;
   height: number | null;
+  /** Location messages. */
+  latitude: number | null;
+  longitude: number | null;
+  accuracyM: number | null;
   /** Local object URL for an attachment that is still being sent. */
   localUrl: string | null;
   /** Readable reason when status is "failed". */
@@ -52,7 +56,23 @@ type PendingMessage = {
   | { kind: "text"; body: string }
   | { kind: "audio"; recording: VoiceRecording; localUrl: string }
   | { kind: "image"; image: PreparedImage; localUrl: string }
+  | { kind: "location"; location: SharedLocation }
 );
+
+/** One point chosen and explicitly sent by the user (no tracking, no drafts). */
+export type SharedLocation = { latitude: number; longitude: number; accuracyM: number | null };
+
+export function isValidLocation(l: SharedLocation): boolean {
+  return (
+    Number.isFinite(l.latitude) &&
+    Number.isFinite(l.longitude) &&
+    l.latitude >= -90 &&
+    l.latitude <= 90 &&
+    l.longitude >= -180 &&
+    l.longitude <= 180 &&
+    (l.accuracyM === null || (Number.isFinite(l.accuracyM) && l.accuracyM >= 0 && l.accuracyM <= 100000))
+  );
+}
 
 /** Server rows win over local copies (e.g. a message later deleted for everyone). */
 function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
@@ -109,6 +129,10 @@ export function useConversationMessages(
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  /** Shared pinned message id (conversations.pinned_message_id). */
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  /** Pinned message row as this viewer may see it (RLS); null = no banner. */
+  const [pinnedFetched, setPinnedFetched] = useState<Message | null>(null);
 
   const latestSeqRef = useRef(0);
   const oldestSeqRef = useRef(0);
@@ -143,7 +167,7 @@ export function useConversationMessages(
     try {
       // Re-check what is already on screen: messages deleted for everyone or
       // hidden ("delete for me", maybe in another tab) while we were away.
-      if (latestSeqRef.current > 0) {
+      if (latestSeqRef.current > 0 && oldestSeqRef.current > 0) {
         const lo = oldestSeqRef.current;
         const hi = latestSeqRef.current;
         const { data, error } = await supabase
@@ -177,7 +201,12 @@ export function useConversationMessages(
           const rows = (data as Message[]).reverse();
           addConfirmed(rows);
           setHasOlder(rows.length === PAGE_SIZE);
-          if (rows.length) latestSeqRef.current = rows[rows.length - 1].seq;
+          if (rows.length) {
+            latestSeqRef.current = rows[rows.length - 1].seq;
+            // Record the window start now: a resync queued before the next
+            // render must not treat the window as starting at seq 0.
+            oldestSeqRef.current = rows[0].seq;
+          }
           break;
         }
         const { data, error } = await supabase
@@ -340,6 +369,26 @@ export function useConversationMessages(
   const deliver = useCallback(
     async (item: PendingMessage) => {
       const id = item.clientMessageId;
+      if (item.kind === "location") {
+        const { latitude, longitude, accuracyM } = item.location;
+        if (!isValidLocation(item.location)) {
+          markFailed(id, "That location isn't valid.");
+          return false;
+        }
+        const { data, error } = await supabase.rpc("send_location_message", {
+          p_conversation_id: conversationId,
+          p_latitude: latitude,
+          p_longitude: longitude,
+          p_client_message_id: id,
+          p_accuracy_m: accuracyM === null ? null : Math.round(accuracyM * 10) / 10,
+        });
+        if (error || !data) {
+          markFailed(id, "Couldn't send the location. Tap Retry.");
+          return false;
+        }
+        addConfirmed([data as Message]);
+        return true;
+      }
       if (item.kind === "text") {
         const { data, error } = await supabase.rpc("send_message", {
           p_conversation_id: conversationId,
@@ -440,6 +489,20 @@ export function useConversationMessages(
     [enqueue],
   );
 
+  const sendLocation = useCallback(
+    async (location: SharedLocation) => {
+      if (!isValidLocation(location)) return false;
+      return enqueue({
+        kind: "location",
+        location,
+        clientMessageId: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        status: "sending",
+      });
+    },
+    [enqueue],
+  );
+
   const sendImage = useCallback(
     async (image: PreparedImage) => {
       const localUrl = URL.createObjectURL(image.blob);
@@ -472,11 +535,115 @@ export function useConversationMessages(
     [pending, deliver],
   );
 
+  // ---------------------------------------------------------------- pinning
+  // Load the pin and keep it live (the conversations row is RLS-filtered per viewer).
+  useEffect(() => {
+    let active = true;
+    void supabase
+      .from("conversations")
+      .select("pinned_message_id")
+      .eq("id", conversationId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (active) setPinnedId((data as { pinned_message_id: string | null } | null)?.pinned_message_id ?? null);
+      });
+    const channel = supabase
+      .channel(`pin:${conversationId}:${crypto.randomUUID()}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${conversationId}` },
+        (payload) => {
+          if (active) setPinnedId((payload.new as { pinned_message_id?: string | null }).pinned_message_id ?? null);
+        },
+      )
+      .subscribe();
+    return () => {
+      active = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [supabase, conversationId]);
+
+  // Fetch the pinned message through the messages RLS policy, so a viewer who
+  // hid it (or cannot see it) gets no banner content.
+  useEffect(() => {
+    let active = true;
+    if (!pinnedId) {
+      queueMicrotask(() => active && setPinnedFetched(null));
+      return () => {
+        active = false;
+      };
+    }
+    void supabase
+      .from("messages")
+      .select("*")
+      .eq("id", pinnedId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (active) setPinnedFetched((data as Message | null) ?? null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [supabase, pinnedId]);
+
+  const pinMessage = useCallback(
+    async (messageId: string): Promise<string | null> => {
+      const { error } = await supabase.rpc("pin_message", { p_message_id: messageId });
+      if (error) return /deleted/i.test(error.message) ? "A deleted message can't be pinned." : "Couldn't pin the message. Try again.";
+      setPinnedId(messageId);
+      return null;
+    },
+    [supabase],
+  );
+
+  const unpinMessage = useCallback(async (): Promise<string | null> => {
+    const current = pinnedId;
+    if (!current) return null;
+    const { error } = await supabase.rpc("unpin_message", {
+      p_conversation_id: conversationId,
+      p_expected_message_id: current,
+    });
+    if (error) return "Couldn't unpin the message. Try again.";
+    setPinnedId((id) => (id === current ? null : id));
+    return null;
+  }, [supabase, conversationId, pinnedId]);
+
+  /**
+   * Make sure a message is loaded (fetching the older range between it and the
+   * oldest loaded message if needed). Returns false if it isn't visible to us.
+   */
+  const ensureLoaded = useCallback(
+    async (messageId: string): Promise<boolean> => {
+      if (confirmedRef.current.some((m) => m.id === messageId)) return true;
+      const { data: target } = await supabase
+        .from("messages")
+        .select("id, seq")
+        .eq("id", messageId)
+        .maybeSingle();
+      const t = target as { id: string; seq: number } | null;
+      if (!t) return false;
+      const oldest = oldestSeqRef.current || Number.MAX_SAFE_INTEGER;
+      const { data, error } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("conversation_id", conversationId)
+        .gte("seq", t.seq)
+        .lt("seq", oldest)
+        .order("seq", { ascending: true })
+        .limit(1000);
+      if (error) return false;
+      setConfirmed((prev) => mergeMessages(prev, data as Message[]));
+      return true;
+    },
+    [supabase, conversationId],
+  );
+
   /** "Delete for me": hidden only for this viewer (enforced by RLS). */
   const hideForMe = useCallback(
     async (messageId: string): Promise<string | null> => {
       const removed = confirmedRef.current.find((m) => m.id === messageId);
       setConfirmed((prev) => prev.filter((m) => m.id !== messageId));
+      setPinnedFetched((p) => (p?.id === messageId ? null : p));
       const { error } = await supabase.rpc("hide_message_for_me", { p_message_id: messageId });
       if (error) {
         if (removed) setConfirmed((prev) => mergeMessages(prev, [removed]));
@@ -512,7 +679,7 @@ export function useConversationMessages(
 
   // Release local audio previews once they are no longer pending.
   useEffect(() => {
-    const live = new Set(pending.flatMap((p) => (p.kind === "text" ? [] : [p.localUrl])));
+    const live = new Set(pending.flatMap((p) => (p.kind === "audio" || p.kind === "image" ? [p.localUrl] : [])));
     for (const url of localUrlsRef.current) {
       if (!live.has(url)) {
         URL.revokeObjectURL(url);
@@ -527,6 +694,14 @@ export function useConversationMessages(
       urls.clear();
     };
   }, []);
+
+  const pinnedMessage: Message | null = useMemo(() => {
+    if (!pinnedId) return null;
+    if (pinnedFetched === null || pinnedFetched.id !== pinnedId) return null;
+    const live = confirmed.find((m) => m.id === pinnedId);
+    const row = live ?? pinnedFetched;
+    return row.deleted_at ? null : row;
+  }, [pinnedId, pinnedFetched, confirmed]);
 
   const messages: DisplayMessage[] = useMemo(() => {
     const confirmedIds = new Set(confirmed.map((m) => m.client_message_id));
@@ -547,6 +722,9 @@ export function useConversationMessages(
         durationMs: m.attachment_duration_ms,
         width: m.attachment_width,
         height: m.attachment_height,
+        latitude: m.location_lat,
+        longitude: m.location_lng,
+        accuracyM: m.location_accuracy_m,
         localUrl: null,
         failReason: null,
       })),
@@ -569,7 +747,10 @@ export function useConversationMessages(
           durationMs: p.kind === "audio" ? p.recording.durationMs : null,
           width: p.kind === "image" ? p.image.width : null,
           height: p.kind === "image" ? p.image.height : null,
-          localUrl: p.kind === "text" ? null : p.localUrl,
+          latitude: p.kind === "location" ? p.location.latitude : null,
+          longitude: p.kind === "location" ? p.location.longitude : null,
+          accuracyM: p.kind === "location" ? p.location.accuracyM : null,
+          localUrl: p.kind === "text" || p.kind === "location" ? null : p.localUrl,
           failReason: p.failReason ?? null,
         })),
     ];
@@ -588,6 +769,12 @@ export function useConversationMessages(
     retry,
     discard,
     markViewed,
+    sendLocation,
+    pinnedId,
+    pinnedMessage,
+    pinMessage,
+    unpinMessage,
+    ensureLoaded,
     hideForMe,
     deleteForEveryone,
     connection,

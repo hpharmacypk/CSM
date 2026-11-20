@@ -11,9 +11,10 @@ import {
 } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisplayMessage } from "@/lib/chat/use-conversation-messages";
-import type { SenderRole } from "@/lib/types";
+import type { Message, SenderRole } from "@/lib/types";
 import { formatDay, formatTime } from "./format";
 import { ChatImage } from "./ChatImage";
+import { LocationCard } from "./LocationCard";
 import { VoiceNotePlayer } from "./VoiceNotePlayer";
 
 type Props = {
@@ -29,6 +30,13 @@ type Props = {
   onViewed: (seq: number) => void;
   onHideForMe: (messageId: string) => Promise<string | null>;
   onDeleteForEveryone: (messageId: string) => Promise<string | null>;
+  /** Shared pinned message id and the row as this viewer may see it. */
+  pinnedId: string | null;
+  pinnedMessage: Message | null;
+  onPin: (messageId: string) => Promise<string | null>;
+  onUnpin: () => Promise<string | null>;
+  /** Loads the message (and anything newer than it) if it isn't loaded yet. */
+  onEnsureLoaded: (messageId: string) => Promise<boolean>;
   emptyState: ReactNode;
   otherPartyLabel: string;
 };
@@ -47,6 +55,11 @@ export function ChatThread({
   onViewed,
   onHideForMe,
   onDeleteForEveryone,
+  pinnedId,
+  pinnedMessage,
+  onPin,
+  onUnpin,
+  onEnsureLoaded,
   emptyState,
   otherPartyLabel,
 }: Props) {
@@ -61,6 +74,8 @@ export function ChatThread({
   const [confirmFor, setConfirmFor] = useState<DisplayMessage | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [replacePinFor, setReplacePinFor] = useState<DisplayMessage | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const latestConfirmedSeq = useCallback(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -144,6 +159,41 @@ export function ChatThread({
     };
   }, [menuFor]);
 
+  /** Tap on the pinned banner: load the original message if needed, then scroll to it. */
+  const jumpToPinned = async () => {
+    if (!pinnedMessage) return;
+    const id = pinnedMessage.id;
+    setBusy(true);
+    const ok = await onEnsureLoaded(id);
+    setBusy(false);
+    if (!ok) {
+      setNotice("That message is no longer available.");
+      return;
+    }
+    // Wait for the (possibly prepended) history to render.
+    for (let i = 0; i < 20; i++) {
+      const el = scrollRef.current?.querySelector(`[data-message-id="${id}"]`);
+      if (el) {
+        nearBottom.current = false;
+        el.scrollIntoView({ block: "center" });
+        setHighlightId(id);
+        window.setTimeout(() => setHighlightId((h) => (h === id ? null : h)), 2000);
+        return;
+      }
+      // Timeouts (not animation frames) so this also completes in a background tab.
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+
+  const requestPin = (m: DisplayMessage) => {
+    setMenuFor(null);
+    if (pinnedId && pinnedId !== m.id) {
+      setReplacePinFor(m); // confirm before replacing the current pin
+      return;
+    }
+    void runAction(() => onPin(m.id as string));
+  };
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -174,6 +224,32 @@ export function ChatThread({
           {notice}
           <button type="button" className="underline" onClick={() => setNotice(null)}>
             Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {pinnedMessage ? (
+        <div className="flex items-stretch border-b border-line bg-surface" data-testid="pinned-banner">
+          <button
+            type="button"
+            onClick={() => void jumpToPinned()}
+            className="flex min-w-0 flex-1 items-center gap-2 px-4 py-2 text-left hover:bg-canvas"
+            aria-label="Go to pinned message"
+          >
+            <span aria-hidden className="text-base">📌</span>
+            <span className="min-w-0">
+              <span className="block text-[11px] font-semibold uppercase tracking-wide text-brand-dark">Pinned message</span>
+              <span className="block truncate text-sm text-ink">{pinnedPreview(pinnedMessage)}</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void runAction(onUnpin)}
+            disabled={busy}
+            className="shrink-0 px-4 text-xs font-medium text-muted hover:bg-canvas hover:text-ink"
+            aria-label="Unpin message"
+          >
+            Unpin
           </button>
         </div>
       ) : null}
@@ -218,7 +294,9 @@ export function ChatThread({
                     </li>
                   ) : null}
                   <li
-                    className={`group flex ${mine ? "justify-end" : "justify-start"} ${grouped ? "" : "mt-2"}`}
+                    className={`group flex rounded-xl transition-colors duration-700 ${mine ? "justify-end" : "justify-start"} ${grouped ? "" : "mt-2"} ${
+                      highlightId !== null && highlightId === m.id ? "bg-amber-100" : ""
+                    }`}
                     data-message-id={m.id ?? undefined}
                   >
                     <div
@@ -240,9 +318,16 @@ export function ChatThread({
                               mine
                                 ? "rounded-br-md bg-brand text-white"
                                 : "rounded-bl-md border border-line bg-surface text-ink"
-                            } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "audio" ? "px-2 py-2" : ""} ${m.type === "image" ? "p-1" : ""}`}
+                            } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "audio" ? "px-2 py-2" : ""} ${m.type === "image" ? "p-1" : ""} ${m.type === "location" ? "px-3 py-2.5" : ""}`}
                           >
-                            {m.type === "image" ? (
+                            {m.type === "location" ? (
+                              <LocationCard
+                                latitude={m.latitude}
+                                longitude={m.longitude}
+                                accuracyM={m.accuracyM}
+                                mine={mine}
+                              />
+                            ) : m.type === "image" ? (
                               <ChatImage
                                 supabase={supabase}
                                 path={m.attachmentPath}
@@ -285,6 +370,32 @@ export function ChatThread({
                                   mine ? "right-0" : "left-0"
                                 }`}
                               >
+                                {!m.deleted ? (
+                                  m.id === pinnedId ? (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      disabled={busy}
+                                      onClick={() => {
+                                        setMenuFor(null);
+                                        void runAction(onUnpin);
+                                      }}
+                                      className="block w-full px-4 py-2.5 text-left text-ink hover:bg-canvas"
+                                    >
+                                      Unpin message
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      disabled={busy}
+                                      onClick={() => requestPin(m)}
+                                      className="block w-full px-4 py-2.5 text-left text-ink hover:bg-canvas"
+                                    >
+                                      Pin message
+                                    </button>
+                                  )
+                                ) : null}
                                 <button
                                   type="button"
                                   role="menuitem"
@@ -339,6 +450,9 @@ export function ChatThread({
                             </button>
                           </>
                         ) : null}
+                        {m.status === "sent" && m.id !== null && m.id === pinnedId && !m.deleted ? (
+                          <span aria-label="Pinned">📌</span>
+                        ) : null}
                         {m.status === "sent" ? (
                           <time dateTime={m.createdAt}>{formatTime(m.createdAt)}</time>
                         ) : null}
@@ -362,6 +476,52 @@ export function ChatThread({
         </button>
       ) : null}
 
+      {replacePinFor ? (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="replace-pin-title"
+          onClick={() => !busy && setReplacePinFor(null)}
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h2 id="replace-pin-title" className="text-base font-semibold text-ink">
+              Replace pinned message?
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              Only one message can be pinned. The current pin
+              {pinnedMessage ? <> (&ldquo;{pinnedPreview(pinnedMessage)}&rdquo;)</> : null} will be replaced for you and{" "}
+              {otherPartyLabel === "Customer" ? "the customer" : otherPartyLabel}.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setReplacePinFor(null)}
+                className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-canvas"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  const target = replacePinFor;
+                  void runAction(async () => {
+                    const err = await onPin(target.id as string);
+                    setReplacePinFor(null);
+                    return err;
+                  });
+                }}
+                className="h-10 rounded-full bg-brand px-4 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                Replace pin
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {confirmFor ? (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
@@ -375,7 +535,7 @@ export function ChatThread({
               Delete for everyone?
             </h2>
             <p className="mt-1 text-sm text-muted">
-              This {confirmFor.type === "image" ? "photo" : confirmFor.type === "audio" ? "voice note" : "message"} will be replaced with
+              This {confirmFor.type === "image" ? "photo" : confirmFor.type === "audio" ? "voice note" : confirmFor.type === "location" ? "location" : "message"} will be replaced with
               &ldquo;This message was deleted&rdquo; for you and {otherPartyLabel === "Customer" ? "the customer" : otherPartyLabel}. This can&apos;t be undone.
             </p>
             <div className="mt-5 flex justify-end gap-2">
@@ -418,4 +578,18 @@ function DotsIcon() {
       <circle cx="19" cy="12" r="2" />
     </svg>
   );
+}
+
+/** One-line preview of a pinned message (content already filtered by RLS). */
+function pinnedPreview(m: Message): string {
+  switch (m.type) {
+    case "image":
+      return "Photo";
+    case "audio":
+      return "Voice note";
+    case "location":
+      return "Shared location";
+    default:
+      return (m.body ?? "").replace(/\s+/g, " ").slice(0, 120);
+  }
 }

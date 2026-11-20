@@ -4,6 +4,8 @@ import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { PreparedImage } from "@/lib/chat/image";
 import type { VoiceRecording } from "@/lib/chat/voice";
 import { ImagePicker } from "./ImagePicker";
+import { LocationPicker } from "./LocationPicker";
+import type { SharedLocation } from "@/lib/chat/use-conversation-messages";
 import { VoiceRecorder } from "./VoiceRecorder";
 
 const MAX_LENGTH = 4000;
@@ -12,18 +14,21 @@ export function Composer({
   onSend,
   onSendVoice,
   onSendImage,
+  onSendLocation,
   disabled,
   placeholder = "Type a message",
 }: {
   onSend: (body: string) => Promise<boolean> | void;
   onSendVoice?: (recording: VoiceRecording) => Promise<boolean> | void;
   onSendImage?: (image: PreparedImage) => Promise<boolean> | void;
+  onSendLocation?: (location: SharedLocation) => Promise<boolean> | void;
   disabled?: boolean;
   placeholder?: string;
 }) {
   const [value, setValue] = useState("");
   const [voiceActive, setVoiceActive] = useState(false);
   const [imageActive, setImageActive] = useState(false);
+  const [locationOpen, setLocationOpen] = useState(false);
   const attachmentActive = voiceActive || imageActive;
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -65,6 +70,21 @@ export function Composer({
             disabled={disabled}
           />
         ) : null}
+        {onSendLocation && !attachmentActive ? (
+          <button
+            type="button"
+            onClick={() => setLocationOpen(true)}
+            disabled={disabled}
+            aria-label="Send location"
+            title="Send location"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-brand transition hover:bg-brand-soft disabled:opacity-40"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z" />
+              <circle cx="12" cy="9.5" r="2.5" />
+            </svg>
+          </button>
+        ) : null}
         <label htmlFor="composer" className="sr-only">
           Message
         </label>
@@ -90,6 +110,9 @@ export function Composer({
           Send
         </button>
       </div>
+      {locationOpen && onSendLocation ? (
+        <LocationPicker onSend={(l) => void onSendLocation(l)} onClose={() => setLocationOpen(false)} />
+      ) : null}
     </form>
   );
 }

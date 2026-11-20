@@ -14,10 +14,12 @@ import {
   type Label,
 } from "./admin-data";
 
+/** Pinned chats first; within each group, newest activity first (same as the server). */
 function sortRows(list: AdminConversationRow[]) {
-  return [...list].sort((a, b) =>
-    (b.last_message_at ?? b.created_at).localeCompare(a.last_message_at ?? a.created_at),
-  );
+  return [...list].sort((a, b) => {
+    if (!!a.pinned_at !== !!b.pinned_at) return a.pinned_at ? -1 : 1;
+    return (b.last_message_at ?? b.created_at).localeCompare(a.last_message_at ?? a.created_at);
+  });
 }
 
 export function ConversationList() {
@@ -29,6 +31,8 @@ export function ConversationList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const filterRef = useRef(filter);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
   const itemsRef = useRef(items);
 
   useEffect(() => {
@@ -140,6 +144,39 @@ export function ConversationList() {
     }
   }, [labels, filter]);
 
+  // Close the row menu on outside tap / Escape.
+  useEffect(() => {
+    if (!menuFor) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+      if (e.target instanceof Element && e.target.closest("[data-chat-menu]")) return;
+      setMenuFor(null);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [menuFor]);
+
+  /** Admin-only (enforced by set_conversation_pinned). */
+  const togglePin = async (row: AdminConversationRow) => {
+    setMenuFor(null);
+    setPinError(null);
+    const pinned = !row.pinned_at;
+    // Optimistic: move it now, confirm from the server.
+    setItems((prev) =>
+      sortRows(prev.map((c) => (c.id === row.id ? { ...c, pinned_at: pinned ? new Date().toISOString() : null } : c))),
+    );
+    const { error } = await supabase.rpc("set_conversation_pinned", {
+      p_conversation_id: row.id,
+      p_pinned: pinned,
+    });
+    if (error) setPinError(pinned ? "Couldn't pin the chat. Try again." : "Couldn't unpin the chat. Try again.");
+    await loadOne(row.id);
+  };
+
   const totalUnread = useMemo(
     () => items.reduce((sum, c) => sum + Math.max(0, c.admin_unread_count), 0),
     [items],
@@ -180,6 +217,11 @@ export function ConversationList() {
           ))}
         </select>
       </div>
+      {pinError ? (
+        <p className="px-4 py-2 text-xs text-danger" role="alert">
+          {pinError}
+        </p>
+      ) : null}
       {error ? (
         <p className="p-4 text-sm text-danger">
           Couldn&apos;t load conversations: {error}{" "}
@@ -200,15 +242,20 @@ export function ConversationList() {
             const unread = Math.max(0, c.admin_unread_count);
             const title = customerLabel(c.display_name, c.public_ref);
             return (
-              <li key={c.id}>
+              <li key={c.id} className="group relative" data-pinned={c.pinned_at ? "true" : undefined}>
                 <Link
                   href={href}
-                  className={`flex gap-3 border-b border-line px-4 py-3 hover:bg-canvas ${active ? "bg-brand-soft" : ""}`}
+                  className={`flex gap-3 border-b border-line py-3 pl-4 pr-11 hover:bg-canvas ${active ? "bg-brand-soft" : ""}`}
                 >
                   <Avatar supabase={supabase} path={c.avatar_path} label={title} size={40} />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className={`truncate text-sm ${unread ? "font-bold text-ink" : "font-medium text-ink"}`}>
+                        {c.pinned_at ? (
+                          <span className="mr-1" role="img" aria-label="Pinned chat" title="Pinned chat">
+                            📌
+                          </span>
+                        ) : null}
                         {title}
                         {c.display_name ? (
                           <span className="ml-1.5 font-mono text-[11px] font-normal text-muted">{c.public_ref}</span>
@@ -245,6 +292,36 @@ export function ConversationList() {
                     ) : null}
                   </div>
                 </Link>
+                <div className="absolute right-2 top-3" data-chat-menu>
+                  <button
+                    type="button"
+                    aria-label={`Chat options for ${title}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuFor === c.id}
+                    onClick={() => setMenuFor(menuFor === c.id ? null : c.id)}
+                    className={`flex h-8 w-8 items-center justify-center rounded-full text-muted hover:bg-black/5 focus:opacity-100 ${
+                      menuFor === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-60"
+                    }`}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                      <circle cx="5" cy="12" r="2" />
+                      <circle cx="12" cy="12" r="2" />
+                      <circle cx="19" cy="12" r="2" />
+                    </svg>
+                  </button>
+                  {menuFor === c.id ? (
+                    <div role="menu" className="absolute right-0 top-full z-30 mt-1 min-w-36 overflow-hidden rounded-xl border border-line bg-surface py-1 text-sm shadow-lg">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => void togglePin(c)}
+                        className="block w-full px-4 py-2.5 text-left text-ink hover:bg-canvas"
+                      >
+                        {c.pinned_at ? "Unpin chat" : "Pin chat"}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </li>
             );
           })}

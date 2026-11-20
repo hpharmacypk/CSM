@@ -17,6 +17,8 @@ export type AdminConversationRow = {
   last_message_preview: string | null;
   admin_unread_count: number;
   labels: Label[];
+  /** Set when an admin pinned this chat (admin-only). */
+  pinned_at: string | null;
 };
 
 /** Fired after the admin creates, renames, deletes, assigns or removes labels. */
