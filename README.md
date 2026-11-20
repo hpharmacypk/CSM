@@ -5,7 +5,8 @@ inbox right away, with no signup, login or OTP. One admin signs in to a separate
 sees every conversation by recent activity with unread counts, and replies live.
 
 Requirements and phases: [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
-**Current status: Phase 1 (text chat), Phase 2B (voice notes) and Phase 2A (images).**
+**Current status: Phase 1 (text chat), Phase 2B (voice notes), Phase 2A (images), and the
+unread fix, message deletion, customer profiles and admin labels update.**
 Backups and deployment are later phases.
 
 ## Stack
@@ -39,6 +40,10 @@ supabase/migrations/20261120000100_phase2b_voice_notes.sql private bucket, stora
 supabase/migrations/20261121000100_phase2a_image_messages.sql image types + dimensions on the same bucket/function
 src/components/chat/ImagePicker.tsx, ChatImage.tsx          select/preview/send, inline image + viewer
 src/lib/chat/image.ts                                      validation, resize, compression, EXIF stripping
+supabase/migrations/20261122000100…000400_*.sql            read boundary, deletion, profiles, labels
+src/app/guest-profile.tsx, src/components/Avatar.tsx       "My profile" panel, private profile photos
+src/app/admin/(dashboard)/labels/                         admin Labels section (/admin/labels)
+src/app/admin/(dashboard)/c/[conversationId]/customer-labels.tsx  assign labels in a conversation
 src/components/chat/VoiceRecorder.tsx, VoiceNotePlayer.tsx  record/preview/send, inline playback
 src/lib/chat/voice.ts                                      formats, limits, readable errors
 supabase/snippets/add_admin.sql                           grant admin to one account (run by hand)
@@ -292,7 +297,7 @@ Known limitations:
 - Uploaded objects can't be deleted from the browser, so a voice note that uploaded but
   whose send was then **discarded** leaves an unreferenced file. A cleanup job belongs
   with backups (Phase 3).
-- Test cleanup: `cleanup_isolation_test_data.sql` deletes test threads, but their audio and image
+- Test cleanup: `cleanup_isolation_test_data.sql` deletes test threads, but their audio, image and profile-photo
   files stay in Storage. Delete the matching conversation folders in
   **Storage → chat-media** from the dashboard.
 
@@ -400,6 +405,154 @@ What was verified locally (Chromium 156 desktop + 375 px phone width, synthetic 
 - Android camera orientation.
 - Firefox.
 
+## Update: unread fix, message deletion, profiles, labels
+
+### Migrations (apply in this order, after the three earlier ones)
+
+1. `supabase/migrations/20261122000100_unread_read_boundary.sql`
+2. `supabase/migrations/20261122000200_message_deletion.sql`
+3. `supabase/migrations/20261122000300_customer_profiles.sql`
+4. `supabase/migrations/20261122000400_admin_labels.sql`
+
+These are forward-only. They don't edit earlier files and don't change any existing message,
+customer, read state or media object. This was checked with an upgrade test that loads data
+with the old migrations and then applies these four.
+
+**SQL Editor:** run each file in order (paste the whole file → **Run**). **Or CLI:**
+
+```powershell
+npx supabase db push
+```
+
+Then check in the dashboard:
+
+- **Storage:** a new private bucket `profile-photos` exists (1 MB limit, WebP/JPEG/PNG).
+- **Database → Publications → supabase_realtime:** now includes `customers` in addition to
+  `messages` and `conversations`. It does **not** include `labels` or `customer_labels`.
+
+Restart `npm run dev`. No `.env.local` changes are needed.
+
+### 1. Unread badge fix
+
+**Cause (reproduced):** the browser called `void supabase.rpc("mark_conversation_read", …)`.
+Supabase query builders are lazy, so an un-awaited call never sends a request. A stubbed
+`fetch` showed 0 requests. Read state was therefore never saved, and the badge never cleared.
+
+There was also a server-side race. Mark-read always marked everything up to the newest
+message, and replying moved the replier's read point past messages they hadn't seen.
+
+**Fix:**
+
+- The thread reports the newest message that is actually on screen: the tab is visible and the
+  view is scrolled to the bottom. The app sends that message's `seq` with `p_up_to_seq`, and the
+  call is awaited.
+- `mark_conversation_read(p_conversation_id, p_up_to_seq)`:
+  - takes the same per-conversation lock as sends
+  - only moves the read boundary forward, and never past the newest message
+  - recomputes the unread count from the messages after the boundary
+  - returns the caller's remaining count, which updates the badge immediately
+
+  A message that commits during the call stays unread.
+- Sends no longer move the sender's read boundary.
+- A background (hidden) tab doesn't mark anything read. Scrolled-up readers see an
+  "N new messages" pill instead.
+- **Where the counts show:** admin list badges (hidden at 0), the admin tab title, and the
+  guest tab title (`(n) H-Pharmacy Support`). Each conversation has its own count.
+
+### 2. Message deletion
+
+Each sent message has a **⋯** menu. It's always visible on touch screens, and appears on hover
+or keyboard focus on desktop.
+
+| Option | Who | Effect |
+| --- | --- | --- |
+| **Delete for me** | Anyone, on any message in their thread | Hidden only for that person, including after refresh and reconnect, and in Realtime. The other side still sees it |
+| **Delete for everyone** | The **sender** only, for text, image or voice (no time limit). Asks for confirmation | Content is cleared in the database and both sides see "This message was deleted", live |
+
+Enforced in the database:
+
+- `hide_message_for_me()` and `delete_message_for_everyone()` work out who is acting from the
+  login session. An admin can hide a customer's message for themself, but **cannot** delete it
+  for everyone.
+- Deleted messages no longer count as unread, and the list preview updates.
+- Clients refresh the visible window when they reconnect, so deleted or hidden content doesn't
+  reappear.
+
+### Retention (current behaviour)
+
+- **Messages** deleted for everyone keep their row (for ordering and history) with the body and
+  attachment fields cleared. "Delete for me" adds a row to `message_hidden`. Nothing is
+  permanently purged.
+- **Media files** are **not deleted** from Storage. Their path is recorded in
+  `private.revoked_media`, and Storage refuses any new signed link or download for it,
+  for the sender, the other participant and the admin.
+- **Signed links issued before the deletion** keep working until they expire. Storage checks
+  the link's token, not access rules. The app now issues **10-minute** links (previously
+  1 hour), and new uploads are cached for at most 10 minutes. `npm run verify:isolation`
+  prints the observed behaviour as an `INFO` line.
+- **Profile photos:** replaced or removed photos stay in Storage but are no longer served to
+  the admin. Only the customer can read files in their own folder.
+- Permanent cleanup of revoked media and old profile photos is **not** part of this change.
+  It belongs with backups and retention (Phase 3).
+
+### 3. Customer profile
+
+- Guests get a **My profile** button in the header. They can add, edit or remove a display name
+  (up to 60 characters), a short bio (up to 300) and a profile photo. Everything is optional,
+  and there's still no login.
+- Photos are compressed in the browser (512 px WebP/JPEG, EXIF removed) and stored in the
+  private `profile-photos` bucket as `<customer_id>/<random>.ext`.
+- The guest header shows their name and photo. The admin sees them in the conversation list
+  and thread header, and the **Profile** button shows the bio. With no name set, the
+  `HP-` reference is shown instead. Changes reach the admin live.
+- Profiles are stored on the existing `customers` row. The customer ID, `HP-` reference, inbox,
+  history and labels never change. Writes only go through `update_my_profile`,
+  `set_my_avatar` and `remove_my_avatar`. Other guests can read neither the profile nor the
+  photo.
+
+### 4. Admin labels
+
+- **Labels** (`/admin/labels`): create, rename and delete labels. Names are trimmed, inner
+  spaces are collapsed, and duplicates are blocked ignoring case. Deleting a label removes its
+  assignments; chats are untouched.
+- **Conversation view:** "+ Add label" / "Edit labels" assigns or removes several labels per
+  customer. The same label can't be assigned twice.
+- **Conversation list:** shows label chips and has a **Filter by label** menu.
+- **Admin-only:** row-level security allows admins only, and neither table is published to
+  Realtime, so guests never receive labels.
+
+### Browser test checklist (after applying the migrations)
+
+1. **Unread:**
+   - Guest A (normal window) sends two messages. In the admin, the badge shows 2.
+   - Open the thread. The badge disappears at once.
+   - Refresh the admin page. It stays at 0.
+   - Guest A sends again. The badge shows 1, and other threads are unchanged.
+2. **Background tab:** keep the admin thread open in a background tab, send from the guest,
+   and the badge stays. Switch to the tab and it clears.
+3. **Scrolled up:** scroll up in the admin thread, then send from the guest. A
+   "1 new message" pill appears and the badge stays until you jump down.
+4. **Guest badge:** the admin replies while the guest tab is in the background. The guest tab
+   title shows `(1)`. Open the tab and it clears.
+5. **Delete for me:** the admin uses Delete for me on a customer message. It disappears for the
+   admin only, including after refresh, and the guest still sees it.
+6. **Delete for everyone:**
+   - The guest deletes their own text, image and voice note for everyone, after confirming.
+   - Both sides show "This message was deleted" live, and still do after refresh.
+   - In the admin, the customer's messages offer only "Delete for me".
+7. **Profile:**
+   - The guest opens **My profile**, adds a name, bio and photo, and saves.
+   - The guest header and the admin list and thread show them, and **Profile** shows the bio.
+   - Remove the photo and clear the name. The admin shows the `HP-` reference again.
+   - A second guest (private window) can't see any of it.
+8. **Labels:**
+   - Create "Pending Order", "Complete" and "Regular Customer". Try "pending order" and
+     "  COMPLETE  ", which should be rejected.
+   - Assign two labels to a customer, filter the list by each, rename one, then delete one.
+     The chats stay.
+9. **Regression:** text, image and voice still send, play and survive refresh, and two guests
+   still can't see each other's chats.
+
 ## Public launch checklist (Phase 4, not done yet)
 
 - [ ] **CAPTCHA for anonymous sign-ins.** Enable Cloudflare Turnstile under
@@ -418,5 +571,6 @@ What was verified locally (Chromium 156 desktop + 375 px phone width, synthetic 
 
 ## Not built yet
 
-Backups (Phase 3) and deployment (Phase 4). Unreferenced attachments (uploaded, then
-discarded before sending) also need a cleanup job, which belongs with backups.
+Backups (Phase 3) and deployment (Phase 4). A retention/cleanup job is also still needed for
+unreferenced attachments (uploaded, then discarded before sending), media of messages deleted
+for everyone, and replaced profile photos. It belongs with backups.

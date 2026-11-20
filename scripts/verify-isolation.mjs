@@ -412,6 +412,230 @@ async function adminImageChecks(admin, A, B, images) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Unread boundary, deletion, profiles, labels (synthetic data only)
+// ---------------------------------------------------------------------------
+const info = (msg) => console.log(`INFO  ${msg}`);
+const PROFILE_BUCKET = "profile-photos";
+
+async function featureChecks(A, B) {
+  const probe = await A.client.rpc("hide_message_for_me", { p_message_id: randomUUID() });
+  if (probe.error && /could not find|does not exist|schema cache/i.test(probe.error.message)) {
+    record("Feature migrations applied", false, "Apply the four 20261122… migrations first");
+    return null;
+  }
+  const { data: custA } = await A.client.from("customers").select("id").single();
+
+  // ---- Unread (guest side)
+  await check("Unread: guest mark-read with a read boundary returns a count", async () => {
+    const { data: c } = await A.client.from("conversations").select("last_message_seq").single();
+    const { data, error } = await A.client.rpc("mark_conversation_read", { p_conversation_id: A.conversationId, p_up_to_seq: c.last_message_seq });
+    return !error && typeof data === "number" ? true : error?.message ?? data;
+  });
+  await check("Unread: other guest cannot mark A's conversation read", async () => {
+    const { error } = await B.client.rpc("mark_conversation_read", { p_conversation_id: A.conversationId, p_up_to_seq: 1 });
+    return error ? true : "allowed";
+  });
+
+  // ---- Deletion (guest side)
+  const aLive = newClient();
+  const { data: sA } = await A.client.auth.getSession();
+  await aLive.auth.setSession({ access_token: sA.session.access_token, refresh_token: sA.session.refresh_token });
+  const aUpd = await listen(aLive, "a-updates", "messages", `conversation_id=eq.${A.conversationId}`);
+  const bAll = await listen(B.client, "b-deletes", "messages");
+  await sleep(1000);
+
+  const { data: t1 } = await send(A.client, A.conversationId, `${TAG} delete me for everyone`);
+  await check("Delete: other guest cannot hide or delete A's message", async () => {
+    const h = await B.client.rpc("hide_message_for_me", { p_message_id: t1.id });
+    const d = await B.client.rpc("delete_message_for_everyone", { p_message_id: t1.id });
+    return h.error && d.error ? true : { hide: !h.error, del: !d.error };
+  });
+  await check("Delete for everyone (guest, text): content cleared", async () => {
+    const { data, error } = await A.client.rpc("delete_message_for_everyone", { p_message_id: t1.id });
+    return !error && data.deleted_at && data.body === null ? true : error?.message ?? data;
+  });
+  await check("Delete for everyone survives refresh (new session client)", async () => {
+    const fresh = newClient();
+    await fresh.auth.setSession({ access_token: sA.session.access_token, refresh_token: sA.session.refresh_token });
+    const { data } = await fresh.from("messages").select("body, deleted_at").eq("id", t1.id).single();
+    return data.deleted_at && data.body === null ? true : data;
+  });
+
+  const { data: t2 } = await send(A.client, A.conversationId, `${TAG} hide me for me`);
+  await check("Delete for me: hidden for that person after refresh", async () => {
+    const { error } = await A.client.rpc("hide_message_for_me", { p_message_id: t2.id });
+    const fresh = newClient();
+    await fresh.auth.setSession({ access_token: sA.session.access_token, refresh_token: sA.session.refresh_token });
+    const { data } = await fresh.from("messages").select("id").eq("id", t2.id);
+    return !error && data.length === 0 ? true : { error: error?.message, rows: data?.length };
+  });
+
+  // Image deleted for everyone: fresh access blocked; observe existing signed link.
+  const img = await uploadAndSendImage(A.client, A.conversationId);
+  const { data: preSigned } = await A.client.storage.from(BUCKET).createSignedUrl(img.path, 120);
+  await check("Delete for everyone (image): fresh signed URL + download blocked", async () => {
+    const { error } = await A.client.rpc("delete_message_for_everyone", { p_message_id: img.sent.data.id });
+    if (error) return error.message;
+    const s = await A.client.storage.from(BUCKET).createSignedUrl(img.path, 60);
+    const d = await A.client.storage.from(BUCKET).download(img.path);
+    return s.error && d.error ? true : { signed: !!s.data, downloaded: !!d.data };
+  });
+  if (preSigned?.signedUrl) {
+    const res = await fetch(preSigned.signedUrl);
+    info(`A signed link issued BEFORE delete-for-everyone returned HTTP ${res.status} afterwards ` +
+      (res.ok ? "(still works until it expires — the app issues 10-minute links)" : "(blocked)"));
+  }
+  const voice = await uploadAndSendVoice(A.client, A.conversationId, { durationMs: 2000 });
+  await check("Delete for everyone (voice): fresh access blocked", async () => {
+    const { error } = await A.client.rpc("delete_message_for_everyone", { p_message_id: voice.sent.data.id });
+    const s = await A.client.storage.from(BUCKET).createSignedUrl(voice.path, 60);
+    return !error && s.error ? true : { error: error?.message, signed: !!s.data };
+  });
+
+  await sleep(REALTIME_WAIT_MS);
+  await check("Delete Realtime: A's other tab receives the deletion live", () =>
+    aUpd.events.some((e) => e.eventType === "UPDATE" && e.new?.id === t1.id && e.new?.deleted_at && e.new?.body === null)
+      ? true : `${aUpd.events.length} events`,
+  );
+  await check("Delete Realtime: B receives nothing from A's thread", () =>
+    bAll.events.some((e) => e.new?.conversation_id === A.conversationId) ? "leaked" : true,
+  );
+  await aLive.removeAllChannels();
+
+  // ---- Profiles
+  await check("Profile: guest saves name + bio on the same customer/HP reference", async () => {
+    const { data, error } = await A.client.rpc("update_my_profile", { p_display_name: `${TAG} Test Name`, p_bio: "Synthetic bio" });
+    return !error && data.id === custA.id && data.public_ref === A.ref ? true : error?.message ?? data;
+  });
+  await check("Profile: other guest cannot read it", async () => {
+    const { data } = await B.client.from("customers").select("display_name").eq("id", custA.id);
+    return (data ?? []).length === 0 ? true : data;
+  });
+  const avatarPath = `${custA.id}/${randomUUID()}.png`;
+  await check("Profile photo: upload + set; owner can view", async () => {
+    const up = await A.client.storage.from(PROFILE_BUCKET).upload(avatarPath, new Blob([PNG_1PX], { type: "image/png" }), { contentType: "image/png" });
+    if (up.error) return `upload: ${up.error.message}`;
+    const { error } = await A.client.rpc("set_my_avatar", { p_path: avatarPath });
+    const s = await A.client.storage.from(PROFILE_BUCKET).createSignedUrl(avatarPath, 60);
+    return !error && s.data ? true : { set: error?.message, sign: s.error?.message };
+  });
+  await check("Profile photo: other guest cannot view or upload into A's folder", async () => {
+    const s = await B.client.storage.from(PROFILE_BUCKET).createSignedUrl(avatarPath, 60);
+    const u = await B.client.storage.from(PROFILE_BUCKET).upload(`${custA.id}/${randomUUID()}.png`, new Blob([PNG_1PX], { type: "image/png" }), { contentType: "image/png" });
+    return s.error && u.error ? true : { sign: !!s.data, upload: !u.error };
+  });
+  await check("Profile photo: over 1 MB rejected by the bucket", async () => {
+    const u = await A.client.storage.from(PROFILE_BUCKET).upload(`${custA.id}/${randomUUID()}.webp`, syntheticAudio(1024 * 1024 + 1, "image/webp"), { contentType: "image/webp" });
+    return u.error ? true : "accepted";
+  });
+
+  // ---- Labels (guest must never see them)
+  await check("Labels: guest cannot read, create or assign; admin list refused", async () => {
+    const l = await B.client.from("labels").select("*");
+    const cl = await B.client.from("customer_labels").select("*");
+    const ins = await B.client.from("labels").insert({ name: `${TAG} hack` });
+    const lst = await B.client.rpc("admin_list_conversations");
+    return (l.error || l.data.length === 0) && (cl.error || cl.data.length === 0) && ins.error && lst.error
+      ? true : { labels: l.data?.length, assigns: cl.data?.length, insert: !ins.error, list: !lst.error };
+  });
+  const bLabels = await listen(B.client, "b-labels", "labels").catch(() => null);
+  const bAssign = await listen(B.client, "b-customer-labels", "customer_labels").catch(() => null);
+  return { custA, avatarPath, bLabels, bAssign };
+}
+
+async function adminFeatureChecks(admin, A, B, f) {
+  // ---- Unread with read boundary, including a message arriving mid-update
+  const { data: m1 } = await send(A.client, A.conversationId, `${TAG} unread 1`);
+  const { data: m2 } = await send(A.client, A.conversationId, `${TAG} unread 2 (arrives during mark-read)`);
+  await check("Unread: admin marks read up to the viewed message; later one stays unread", async () => {
+    const { data, error } = await admin.rpc("mark_conversation_read", { p_conversation_id: A.conversationId, p_up_to_seq: m1.seq });
+    return !error && data === 1 ? true : error?.message ?? data;
+  });
+  await check("Unread: cleared at the latest message and stays cleared after refresh", async () => {
+    await admin.rpc("mark_conversation_read", { p_conversation_id: A.conversationId, p_up_to_seq: m2.seq });
+    const { data } = await admin.rpc("admin_list_conversations", { p_conversation_id: A.conversationId });
+    return data?.[0]?.admin_unread_count === 0 ? true : data;
+  });
+  await check("Unread: a new message counts again; other conversations unaffected", async () => {
+    const { data: before } = await admin.rpc("admin_list_conversations", { p_conversation_id: B.conversationId });
+    await send(A.client, A.conversationId, `${TAG} unread 3`);
+    const { data: a } = await admin.rpc("admin_list_conversations", { p_conversation_id: A.conversationId });
+    const { data: b } = await admin.rpc("admin_list_conversations", { p_conversation_id: B.conversationId });
+    return a?.[0]?.admin_unread_count === 1 && b?.[0]?.admin_unread_count === before?.[0]?.admin_unread_count ? true : { a, b };
+  });
+
+  // ---- Deletion rules for the admin
+  const { data: cm } = await send(A.client, A.conversationId, `${TAG} customer message`);
+  await check("Delete: admin cannot delete a customer's message for everyone", async () => {
+    const { error } = await admin.rpc("delete_message_for_everyone", { p_message_id: cm.id });
+    return error ? true : "allowed";
+  });
+  await check("Delete for me (admin): hidden for admin only; customer still sees it", async () => {
+    const { error } = await admin.rpc("hide_message_for_me", { p_message_id: cm.id });
+    const { data: ad } = await admin.from("messages").select("id").eq("id", cm.id);
+    const { data: gu } = await A.client.from("messages").select("body").eq("id", cm.id);
+    return !error && ad.length === 0 && gu[0]?.body?.includes("customer message") ? true : { error: error?.message, ad, gu };
+  });
+  const aLive = await listen(A.client, "a-admin-delete", "messages", `conversation_id=eq.${A.conversationId}`);
+  await sleep(1000);
+  const { data: am } = await send(admin, A.conversationId, `${TAG} admin message to delete`);
+  await check("Delete for everyone (admin's own message): cleared for the customer", async () => {
+    const { error } = await admin.rpc("delete_message_for_everyone", { p_message_id: am.id });
+    await sleep(REALTIME_WAIT_MS);
+    const { data } = await A.client.from("messages").select("body, deleted_at").eq("id", am.id).single();
+    const live = aLive.events.some((e) => e.eventType === "UPDATE" && e.new?.id === am.id && e.new?.deleted_at);
+    return !error && data.deleted_at && data.body === null && live ? true : { error: error?.message, data, live };
+  });
+
+  // ---- Profile visible to admin; replaced photo no longer served
+  await check("Profile: admin sees name, bio and current photo", async () => {
+    const { data } = await admin.from("customers").select("display_name, bio, avatar_path, public_ref").eq("id", f.custA.id).single();
+    const s = await admin.storage.from(PROFILE_BUCKET).createSignedUrl(f.avatarPath, 60);
+    return data?.display_name?.includes("Test Name") && data.bio === "Synthetic bio" && data.public_ref === A.ref && !s.error
+      ? true : { data, sign: s.error?.message };
+  });
+  await check("Profile: after removing the photo the admin can no longer load it", async () => {
+    await A.client.rpc("remove_my_avatar");
+    const s = await admin.storage.from(PROFILE_BUCKET).createSignedUrl(f.avatarPath, 60);
+    return s.error ? true : "still served";
+  });
+
+  // ---- Labels
+  const name = `${TAG} Pending Order ${randomUUID().slice(0, 6)}`;
+  const { data: L, error: le } = await admin.from("labels").insert({ name: `  ${name}  ` }).select().single();
+  await check("Labels: admin creates a label (trimmed)", () => (!le && L.name === name ? true : le?.message ?? L));
+  if (L) {
+    await check("Labels: duplicate differing by case/spaces rejected", async () => {
+      const { error } = await admin.from("labels").insert({ name: ` ${name.toUpperCase()} ` });
+      return error ? true : "duplicate accepted";
+    });
+    await check("Labels: assign to customer, list shows it, filter works", async () => {
+      const ins = await admin.from("customer_labels").insert({ customer_id: f.custA.id, label_id: L.id });
+      const dup = await admin.from("customer_labels").insert({ customer_id: f.custA.id, label_id: L.id });
+      const { data } = await admin.rpc("admin_list_conversations", { p_label_id: L.id });
+      return !ins.error && dup.error && data.length === 1 && data[0].id === A.conversationId && data[0].labels.some((x) => x.id === L.id)
+        ? true : { ins: ins.error?.message, dup: !dup.error, data };
+    });
+    await sleep(REALTIME_WAIT_MS);
+    await check("Labels: guests receive no label events live", () => {
+      const n = (f.bLabels?.events.length ?? 0) + (f.bAssign?.events.length ?? 0);
+      return n === 0 ? true : `${n} events`;
+    });
+    await check("Labels: guest A cannot see its own labels", async () => {
+      const { data } = await A.client.from("customer_labels").select("*");
+      return (data ?? []).length === 0 ? true : data;
+    });
+    await check("Labels: deleting a label removes assignments, chat intact", async () => {
+      const { count: before } = await admin.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", A.conversationId);
+      const { error } = await admin.from("labels").delete().eq("id", L.id);
+      const { data: left } = await admin.from("customer_labels").select("*").eq("label_id", L.id);
+      const { count: after } = await admin.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", A.conversationId);
+      return !error && left.length === 0 && before === after ? true : { error: error?.message, left: left?.length, before, after };
+    });
+  }
+}
+
 async function main() {
   console.log(`Supabase project: ${new globalThis.URL(URL).host}\n`);
 
@@ -586,6 +810,9 @@ async function main() {
   // ---------------------------------------------------------- images (2A)
   const images = await imageChecks(A, B);
 
+  // -------------------- unread, deletion, profiles, labels (guest side)
+  const features = await featureChecks(A, B);
+
   // --------------------------------------------------------------- admin
   if (WITH_ADMIN) {
     const email = await askHidden("Admin email: ", false);
@@ -667,6 +894,7 @@ async function main() {
       });
       if (voice) await adminVoiceChecks(admin, A, B, voice);
       if (images) await adminImageChecks(admin, A, B, images);
+      if (features) await adminFeatureChecks(admin, A, B, features);
       await admin.removeAllChannels();
       await admin.auth.signOut({ scope: "local" });
     }

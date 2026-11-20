@@ -14,6 +14,8 @@ export type Message = {
   attachment_duration_ms: number | null;
   attachment_width: number | null;
   attachment_height: number | null;
+  deleted_at: string | null;
+  deleted_by: string | null;
   client_message_id: string;
   created_at: string;
 };

@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { MEDIA_BUCKET } from "@/lib/chat/voice";
 
-const SIGNED_URL_SECONDS = 60 * 60;
+// Short-lived: a link issued before a "delete for everyone" keeps working until
+// it expires (Storage validates the link token, not RLS). See README "Retention".
+const SIGNED_URL_SECONDS = 10 * 60;
 
 type Props = {
   supabase: SupabaseClient;

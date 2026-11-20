@@ -19,6 +19,11 @@ export type ConnectionState = "connecting" | "live" | "reconnecting";
 
 export type DisplayMessage = {
   key: string;
+  /** Server id/seq (null while still sending). */
+  id: string | null;
+  seq: number | null;
+  /** Deleted for everyone: show "This message was deleted". */
+  deleted: boolean;
   clientMessageId: string;
   senderRole: SenderRole;
   type: Message["type"];
@@ -49,18 +54,32 @@ type PendingMessage = {
   | { kind: "image"; image: PreparedImage; localUrl: string }
 );
 
+/** Server rows win over local copies (e.g. a message later deleted for everyone). */
 function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
   if (incoming.length === 0) return existing;
   const byId = new Map(existing.map((m) => [m.id, m]));
   let changed = false;
   for (const m of incoming) {
-    if (!byId.has(m.id)) {
+    const prev = byId.get(m.id);
+    if (!prev || prev.deleted_at !== m.deleted_at || prev.body !== m.body || prev.attachment_path !== m.attachment_path) {
       byId.set(m.id, m);
       changed = true;
     }
   }
   if (!changed) return existing;
   return [...byId.values()].sort((a, b) => a.seq - b.seq);
+}
+
+/** Events other parts of the page listen to (badge, admin list). */
+export const CHAT_EVENTS = {
+  /** detail: { conversationId, unread } — caller's remaining unread count. */
+  read: "hp:conversation-read",
+  /** detail: { conversationId } — something in the thread changed (deletion). */
+  changed: "hp:conversation-changed",
+} as const;
+
+function emit(name: string, detail: Record<string, unknown>) {
+  window.dispatchEvent(new CustomEvent(name, { detail }));
 }
 
 function errorText(error: unknown): string {
@@ -92,13 +111,18 @@ export function useConversationMessages(
   const [connection, setConnection] = useState<ConnectionState>("connecting");
 
   const latestSeqRef = useRef(0);
+  const oldestSeqRef = useRef(0);
+  const confirmedRef = useRef<Message[]>([]);
   const lastMarkedSeqRef = useRef(0);
+  const markInFlight = useRef(false);
   const catchUpRunning = useRef(false);
   const catchUpQueued = useRef(false);
   const localUrlsRef = useRef(new Set<string>());
 
   useEffect(() => {
     latestSeqRef.current = confirmed.length ? confirmed[confirmed.length - 1].seq : 0;
+    oldestSeqRef.current = confirmed.length ? confirmed[0].seq : 0;
+    confirmedRef.current = confirmed;
   }, [confirmed]);
 
   const addConfirmed = useCallback((rows: Message[]) => {
@@ -117,6 +141,29 @@ export function useConversationMessages(
     catchUpRunning.current = true;
     catchUpQueued.current = false;
     try {
+      // Re-check what is already on screen: messages deleted for everyone or
+      // hidden ("delete for me", maybe in another tab) while we were away.
+      if (latestSeqRef.current > 0) {
+        const lo = oldestSeqRef.current;
+        const hi = latestSeqRef.current;
+        const { data, error } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("conversation_id", conversationId)
+          .gte("seq", lo)
+          .lte("seq", hi)
+          .order("seq", { ascending: true })
+          .limit(1000);
+        if (error) throw error;
+        const rows = data as Message[];
+        const visible = new Set(rows.map((r) => r.id));
+        setConfirmed((prev) =>
+          mergeMessages(
+            prev.filter((m) => m.seq < lo || m.seq > hi || visible.has(m.id)),
+            rows,
+          ),
+        );
+      }
       for (;;) {
         const after = latestSeqRef.current;
         if (after === 0) {
@@ -183,6 +230,21 @@ export function useConversationMessages(
           if (active) addConfirmed([payload.new as Message]);
         },
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "messages",
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        (payload) => {
+          // e.g. deleted for everyone by the sender: content arrives cleared.
+          if (!active) return;
+          const row = payload.new as Message;
+          setConfirmed((prev) => (prev.some((m) => m.id === row.id) ? mergeMessages(prev, [row]) : prev));
+        },
+      )
       .subscribe((status) => {
         if (!active) return;
         if (status === "SUBSCRIBED") {
@@ -208,24 +270,40 @@ export function useConversationMessages(
     };
   }, [supabase, conversationId, catchUp, addConfirmed]);
 
-  // Mark as read whenever a message from the other side is visible.
-  useEffect(() => {
-    const markIfNeeded = () => {
-      if (document.visibilityState !== "visible") return;
-      const latest = confirmed[confirmed.length - 1];
-      if (!latest || latest.seq <= lastMarkedSeqRef.current) return;
-      const hasIncoming = confirmed.some(
-        (m) => m.seq > lastMarkedSeqRef.current && m.sender_role !== viewerRole,
+  /**
+   * Called by the thread view with the newest message the reader actually has
+   * on screen (tab visible, scrolled to it). That seq — not "everything on the
+   * server" — is the read boundary, so a message that arrives meanwhile stays
+   * unread. The RPC is awaited: Supabase query builders are lazy and a
+   * `void supabase.rpc(...)` never sends the request (the old badge bug).
+   */
+  const markViewed = useCallback(
+    async (upToSeq: number) => {
+      if (upToSeq <= lastMarkedSeqRef.current || markInFlight.current) return;
+      const hasIncoming = confirmedRef.current.some(
+        (m) =>
+          m.seq > lastMarkedSeqRef.current &&
+          m.seq <= upToSeq &&
+          m.sender_role !== viewerRole &&
+          !m.deleted_at,
       );
-      lastMarkedSeqRef.current = latest.seq;
-      if (hasIncoming) {
-        void supabase.rpc("mark_conversation_read", { p_conversation_id: conversationId });
+      const previous = lastMarkedSeqRef.current;
+      lastMarkedSeqRef.current = upToSeq;
+      if (!hasIncoming) return;
+      markInFlight.current = true;
+      const { data, error } = await supabase.rpc("mark_conversation_read", {
+        p_conversation_id: conversationId,
+        p_up_to_seq: upToSeq,
+      });
+      markInFlight.current = false;
+      if (error) {
+        lastMarkedSeqRef.current = previous; // try again on the next view
+        return;
       }
-    };
-    markIfNeeded();
-    document.addEventListener("visibilitychange", markIfNeeded);
-    return () => document.removeEventListener("visibilitychange", markIfNeeded);
-  }, [confirmed, supabase, conversationId, viewerRole]);
+      emit(CHAT_EVENTS.read, { conversationId, unread: typeof data === "number" ? data : 0 });
+    },
+    [supabase, conversationId, viewerRole],
+  );
 
   const loadOlder = useCallback(async () => {
     const oldest = confirmed[0];
@@ -289,7 +367,7 @@ export function useConversationMessages(
       const file = new Blob([blob], { type: mime });
       const upload = await supabase.storage
         .from(MEDIA_BUCKET)
-        .upload(path, file, { contentType: mime, upsert: false, cacheControl: "31536000" });
+        .upload(path, file, { contentType: mime, upsert: false, cacheControl: "600" });
       if (upload.error && !isAlreadyUploaded(upload.error)) {
         markFailed(id, uploadErrorMessage(upload.error, noun));
         return false;
@@ -394,6 +472,40 @@ export function useConversationMessages(
     [pending, deliver],
   );
 
+  /** "Delete for me": hidden only for this viewer (enforced by RLS). */
+  const hideForMe = useCallback(
+    async (messageId: string): Promise<string | null> => {
+      const removed = confirmedRef.current.find((m) => m.id === messageId);
+      setConfirmed((prev) => prev.filter((m) => m.id !== messageId));
+      const { error } = await supabase.rpc("hide_message_for_me", { p_message_id: messageId });
+      if (error) {
+        if (removed) setConfirmed((prev) => mergeMessages(prev, [removed]));
+        return "Couldn't delete the message. Try again.";
+      }
+      emit(CHAT_EVENTS.changed, { conversationId });
+      return null;
+    },
+    [supabase, conversationId],
+  );
+
+  /** "Delete for everyone": sender only (enforced by the database). */
+  const deleteForEveryone = useCallback(
+    async (messageId: string): Promise<string | null> => {
+      const { data, error } = await supabase.rpc("delete_message_for_everyone", {
+        p_message_id: messageId,
+      });
+      if (error || !data) {
+        return /own messages/i.test(error?.message ?? "")
+          ? "You can only delete your own messages for everyone."
+          : "Couldn't delete the message. Try again.";
+      }
+      setConfirmed((prev) => mergeMessages(prev, [data as Message]));
+      emit(CHAT_EVENTS.changed, { conversationId });
+      return null;
+    },
+    [supabase, conversationId],
+  );
+
   const discard = useCallback((clientMessageId: string) => {
     setPending((prev) => prev.filter((p) => p.clientMessageId !== clientMessageId));
   }, []);
@@ -421,6 +533,9 @@ export function useConversationMessages(
     return [
       ...confirmed.map<DisplayMessage>((m) => ({
         key: m.id,
+        id: m.id,
+        seq: m.seq,
+        deleted: m.deleted_at !== null && m.deleted_at !== undefined,
         clientMessageId: m.client_message_id,
         senderRole: m.sender_role,
         type: m.type,
@@ -439,6 +554,9 @@ export function useConversationMessages(
         .filter((p) => !confirmedIds.has(p.clientMessageId))
         .map<DisplayMessage>((p) => ({
           key: `pending-${p.clientMessageId}`,
+          id: null,
+          seq: null,
+          deleted: false,
           clientMessageId: p.clientMessageId,
           senderRole: viewerRole,
           type: p.kind,
@@ -469,6 +587,9 @@ export function useConversationMessages(
     sendImage,
     retry,
     discard,
+    markViewed,
+    hideForMe,
+    deleteForEveryone,
     connection,
     reload: catchUp,
   };

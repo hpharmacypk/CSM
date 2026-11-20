@@ -101,7 +101,12 @@ async function render(d: Decoded, maxSide: number, mime: ImageBaseMime, quality:
  * encode it (sharper text per byte), otherwise JPEG. Throws ImagePrepError
  * with a readable message.
  */
-export async function prepareImage(file: File): Promise<PreparedImage> {
+export async function prepareImage(
+  file: File,
+  opts: { maxDimension?: number; maxBytes?: number } = {},
+): Promise<PreparedImage> {
+  const maxDimension = opts.maxDimension ?? MAX_DIMENSION;
+  const maxBytes = opts.maxBytes ?? IMAGE_MAX_UPLOAD_BYTES;
   if (!isAllowedType(file.type)) {
     throw new ImagePrepError("Only JPEG, PNG and WebP images can be sent.");
   }
@@ -117,9 +122,9 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
     // Screenshots/PNGs with text get a higher quality to keep edges crisp.
     const quality = file.type === "image/png" ? 0.92 : 0.85;
     const attempts: [number, number][] = [
-      [MAX_DIMENSION, quality],
-      [MAX_DIMENSION, 0.75],
-      [MIN_DIMENSION_ON_RETRY, 0.75],
+      [maxDimension, quality],
+      [maxDimension, 0.75],
+      [Math.min(maxDimension, MIN_DIMENSION_ON_RETRY), 0.75],
     ];
     for (const [maxSide, q] of attempts) {
       let out = await render(decoded, maxSide, "image/webp", q);
@@ -132,7 +137,7 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
       if (!out.blob || out.blob.type !== mime) {
         throw new ImagePrepError("This browser can't prepare images for sending.");
       }
-      if (out.blob.size <= IMAGE_MAX_UPLOAD_BYTES) {
+      if (out.blob.size <= maxBytes) {
         return {
           blob: out.blob,
           mime,
@@ -143,7 +148,7 @@ export async function prepareImage(file: File): Promise<PreparedImage> {
         };
       }
     }
-    throw new ImagePrepError("This image is too detailed to send under 3 MB. Try cropping it.");
+    throw new ImagePrepError(`This image is too detailed to send under ${formatBytes(maxBytes)}. Try cropping it.`);
   } finally {
     decoded.close();
   }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMemo, useState, type ReactNode } from "react";
 import { Brand } from "@/components/Brand";
@@ -11,7 +12,9 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const supabase = useMemo(() => getAdminBrowserClient(), []);
   const router = useRouter();
   const pathname = usePathname();
-  const inThread = pathname.startsWith("/admin/c/");
+  // On phones the list and the detail pane (thread or Labels) take turns.
+  const inThread = pathname !== "/admin";
+  const onLabels = pathname.startsWith("/admin/labels");
   const [signingOut, setSigningOut] = useState(false);
 
   const signOut = async () => {
@@ -27,6 +30,22 @@ export function AdminShell({ children }: { children: ReactNode }) {
       <div className="flex h-full flex-col">
         <header className="flex items-center justify-between border-b border-line bg-surface px-4 py-3">
           <Brand subtitle="Support inbox" />
+          <nav className="ml-auto mr-2 flex items-center gap-1 text-sm" aria-label="Admin sections">
+            <Link
+              href="/admin"
+              aria-current={!onLabels ? "page" : undefined}
+              className={`rounded-full px-3 py-1.5 ${!onLabels ? "bg-brand-soft font-semibold text-brand-dark" : "text-muted hover:bg-canvas"}`}
+            >
+              Inbox
+            </Link>
+            <Link
+              href="/admin/labels"
+              aria-current={onLabels ? "page" : undefined}
+              className={`rounded-full px-3 py-1.5 ${onLabels ? "bg-brand-soft font-semibold text-brand-dark" : "text-muted hover:bg-canvas"}`}
+            >
+              Labels
+            </Link>
+          </nav>
           <button
             type="button"
             onClick={signOut}

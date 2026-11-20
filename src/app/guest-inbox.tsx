@@ -6,9 +6,50 @@ import { Brand } from "@/components/Brand";
 import { ChatThread } from "@/components/chat/ChatThread";
 import { Composer } from "@/components/chat/Composer";
 import { ConnectionBadge } from "@/components/chat/ConnectionBadge";
-import { useConversationMessages } from "@/lib/chat/use-conversation-messages";
+import { CHAT_EVENTS, useConversationMessages } from "@/lib/chat/use-conversation-messages";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { getGuestClient } from "@/lib/supabase/guest-client";
+import { GuestProfileButton } from "./guest-profile";
+
+const BASE_TITLE = "H-Pharmacy Support";
+
+/**
+ * Guest unread badge (browser tab title). Starts from the stored count, stays
+ * live through Realtime, and is set immediately from mark-read results.
+ */
+function useGuestUnreadTitle(supabase: SupabaseClient, conversationId: string) {
+  useEffect(() => {
+    let active = true;
+    const apply = (n: number) => {
+      if (active) document.title = n > 0 ? `(${n}) ${BASE_TITLE}` : BASE_TITLE;
+    };
+    void supabase
+      .from("conversations")
+      .select("customer_unread_count")
+      .eq("id", conversationId)
+      .maybeSingle()
+      .then(({ data }) => apply(data?.customer_unread_count ?? 0));
+    const channel = supabase
+      .channel(`guest-unread:${conversationId}:${crypto.randomUUID()}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${conversationId}` },
+        (payload) => apply((payload.new as { customer_unread_count?: number }).customer_unread_count ?? 0),
+      )
+      .subscribe();
+    const onRead = (e: Event) => {
+      const d = (e as CustomEvent<{ conversationId: string; unread: number }>).detail;
+      if (d.conversationId === conversationId) apply(d.unread);
+    };
+    window.addEventListener(CHAT_EVENTS.read, onRead);
+    return () => {
+      active = false;
+      window.removeEventListener(CHAT_EVENTS.read, onRead);
+      document.title = BASE_TITLE;
+      void supabase.removeChannel(channel);
+    };
+  }, [supabase, conversationId]);
+}
 
 type BootState =
   | { kind: "starting" }
@@ -93,6 +134,7 @@ export function GuestInbox() {
       <header className="border-b border-line bg-surface px-4 py-3 sm:px-6">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
           <Brand subtitle="Customer support" />
+          {boot.kind === "ready" ? <GuestProfileButton supabase={boot.supabase} /> : null}
         </div>
       </header>
 
@@ -131,6 +173,7 @@ function GuestChat({
   conversationId: string;
 }) {
   const chat = useConversationMessages(supabase, conversationId, "customer");
+  useGuestUnreadTitle(supabase, conversationId);
 
   return (
     <main className="flex min-h-0 flex-1 flex-col">
@@ -157,6 +200,9 @@ function GuestChat({
           onLoadOlder={() => void chat.loadOlder()}
           onRetry={(id) => void chat.retry(id)}
           onDiscard={chat.discard}
+          onViewed={(seq) => void chat.markViewed(seq)}
+          onHideForMe={chat.hideForMe}
+          onDeleteForEveryone={chat.deleteForEveryone}
           emptyState={
             <div className="max-w-sm text-center">
               <p className="text-base font-semibold text-ink">How can we help?</p>
