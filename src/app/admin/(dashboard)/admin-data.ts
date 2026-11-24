@@ -19,7 +19,54 @@ export type AdminConversationRow = {
   labels: Label[];
   /** Set when an admin pinned this chat (admin-only). */
   pinned_at: string | null;
+  /** Set when an admin archived this chat (admin-only; independent of the customer). */
+  archived_at: string | null;
+  /** Set while the admin has blocked this customer (no new messages either way). */
+  blocked_at?: string | null;
 };
+
+/** detail: { conversationId, blocked } — the admin blocked/unblocked a customer. */
+export const BLOCK_CHANGED = "hp:block-changed";
+
+export function emitBlockChanged(conversationId: string, blocked: boolean) {
+  window.dispatchEvent(new CustomEvent(BLOCK_CHANGED, { detail: { conversationId, blocked } }));
+}
+
+/** detail: { conversationId, archived } — the admin archived/unarchived a chat. */
+export const ARCHIVE_CHANGED = "hp:archive-changed";
+
+export function emitArchiveChanged(conversationId: string, archived: boolean) {
+  window.dispatchEvent(new CustomEvent(ARCHIVE_CHANGED, { detail: { conversationId, archived } }));
+}
+
+/** One Storage object still queued for removal after a customer was deleted. */
+type PendingFile = { bucket_id: string; object_name: string };
+
+/**
+ * Removes files of deleted customers through the Storage API with the admin's
+ * own session (Storage policies allow this only for queued files), then asks
+ * the database what is still left. Safe to call any number of times.
+ * Returns the number of files still pending, or null if the queue can't be read.
+ */
+export async function runStorageCleanup(supabase: SupabaseClient): Promise<number | null> {
+  const first = await supabase.rpc("admin_pending_storage_cleanup");
+  if (first.error) return null;
+  const files = (first.data as PendingFile[] | null) ?? [];
+  if (files.length === 0) return 0;
+
+  const byBucket = new Map<string, string[]>();
+  for (const f of files) byBucket.set(f.bucket_id, [...(byBucket.get(f.bucket_id) ?? []), f.object_name]);
+  for (const [bucket, names] of byBucket) {
+    for (let i = 0; i < names.length; i += 100) {
+      // Errors are reflected in the re-check below; nothing else to do here.
+      await supabase.storage.from(bucket).remove(names.slice(i, i + 100));
+    }
+  }
+
+  const again = await supabase.rpc("admin_pending_storage_cleanup");
+  if (again.error) return null;
+  return ((again.data as PendingFile[] | null) ?? []).length;
+}
 
 /** Fired after the admin creates, renames, deletes, assigns or removes labels. */
 export const LABELS_CHANGED = "hp:labels-changed";

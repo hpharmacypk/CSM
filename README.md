@@ -46,6 +46,10 @@ src/app/guest-profile.tsx, src/components/Avatar.tsx       "My profile" panel, p
 src/app/admin/(dashboard)/labels/                         admin Labels section (/admin/labels)
 src/app/admin/(dashboard)/c/[conversationId]/customer-labels.tsx  assign labels in a conversation
 supabase/migrations/20261123000100…000300_*.sql            chat pins, message pins, locations
+supabase/migrations/20261124000100_customer_deletion_and_archiving.sql  delete customer, archiving
+supabase/migrations/20261124000200_block_and_forward.sql   block/unblock, forward message
+src/app/admin/(dashboard)/c/[conversationId]/forward-dialog.tsx  forward picker (admin)
+src/components/chat/EmojiPicker.tsx                       emoji picker (Unicode, keyboard accessible)
 src/components/chat/LocationPicker.tsx, MapPicker.tsx     Send location (Leaflet + OpenStreetMap)
 src/components/chat/LocationCard.tsx                      location card + Open in Google Maps
 src/components/chat/VoiceRecorder.tsx, VoiceNotePlayer.tsx  record/preview/send, inline playback
@@ -671,6 +675,137 @@ Restart `npm run dev`. There are no new environment variables.
    then delete it for everyone. The card and the banner clear.
 9. **Regression:** text, image, voice, profile, labels, unread badges and two-guest isolation
    still work.
+
+## Update: delete customer, archiving, emoji
+
+### Migration (apply after the ten earlier ones)
+
+`supabase/migrations/20261124000100_customer_deletion_and_archiving.sql`
+
+Forward-only; earlier files are unchanged. Run it in the **SQL Editor** (or `npx supabase db
+push`). **Apply it before deploying this code.** Until it is applied the customer inbox keeps
+working (the Archive button stays hidden), but the admin's Archive and Delete customer actions
+report an error.
+
+**No new environment variables and no service-role key.** File cleanup runs in the admin's
+browser with the admin's own session; Storage policies allow it only for queued files.
+Nothing changes in Hostinger's settings.
+
+### 1. Delete customer (admin only)
+
+Inbox → **⋯** on a conversation → **Delete customer**. The confirmation names the customer
+(display name and HP reference; the app stores no phone number) and states that the profile,
+chat history and attachments will be permanently deleted.
+
+- `admin_delete_customer()` checks `private.is_admin()` in the database and refuses any
+  customer linked to an admin or a non-anonymous account. It deletes that one customer row;
+  cascades remove their conversation, messages, "delete for me" records, chat pin, archive
+  record and label assignments. Shared labels, other customers and admin accounts are kept.
+- The customer's files (`chat-media/<conversation>/…`, `profile-photos/<customer>/…`) are
+  recorded in `private.storage_cleanup` in the same transaction. The admin's browser then
+  removes them with the Storage API. Policies `storage_cleanup_admin_select/delete` let an
+  admin see and delete **only** queued objects.
+- If removal fails, the inbox shows "N files from deleted customers still need to be removed"
+  with **Retry**. The check also runs every time the inbox opens.
+- The guest's anonymous account is kept (it holds no personal data). An open customer chat
+  switches to "This conversation is no longer available" (Realtime, or on the next refresh,
+  send or tab focus) and never shows the old history again. **Start a new chat** gives a new,
+  empty inbox with a new HP reference.
+
+### 2. Archiving (independent per side)
+
+- **Admin:** **⋯ → Archive chat** (or **Archive** in the chat header). Archived chats move to a
+  collapsible **Archived** section at the bottom of the inbox, even if pinned, and show their
+  unread count there. **Unarchive chat** / **Archived · Restore** brings them back. Stored in
+  `conversation_admin_archives` (admin-only).
+- **Customer:** **Archive** in the header. The chat is replaced by an archived view with the
+  number of new replies and an **Unarchive chat** button. Stored in
+  `conversations.customer_archived_at`, set only by `set_my_conversation_archived()`.
+- One side never archives the chat for the other. New messages never unarchive. Messages,
+  attachments, pins, labels and unread counts are unchanged. Both states are in the database
+  and survive refreshes.
+
+### 3. Emoji
+
+Smiley button inside the message field (admin and customer). Click or use the keyboard: arrow
+keys move, Enter inserts at the cursor, Escape closes and returns focus. Emojis are plain
+Unicode sent through the normal text message flow. Messages of only 1–3 emojis are shown larger.
+
+### Browser test checklist (after applying the migration)
+
+1. Admin archives a chat → it moves to **Archived**. The customer's chat is not archived.
+2. Customer sends a message → it stays archived for the admin, with an unread badge on
+   **Archived**. Refresh: still archived.
+3. Customer archives → archived view. Admin replies → "1 new reply". Customer unarchives → reply
+   visible. The admin side is unchanged.
+4. Emoji: insert one mid-sentence, send text + emoji and an emoji-only message, both directions.
+5. Delete a **test** customer created for this purpose (never a real one): it disappears from
+   the list. The open guest tab shows "no longer available". Other customers and labels are
+   unchanged. In Storage, that customer's folders are gone.
+
+### Retention
+
+Deleting a customer **permanently** deletes their database rows and Storage files (see above).
+Messages deleted for everyone and replaced profile photos keep the earlier retention rules.
+
+## Update: block / unblock and forward message (admin)
+
+### Migration (apply after `20261124000100_customer_deletion_and_archiving.sql`)
+
+`supabase/migrations/20261124000200_block_and_forward.sql`
+
+Full apply order for a project that has the first ten: **`20261124000100…` then
+`20261124000200…`**. Both are forward-only and keep existing data. Apply them before deploying
+this code. No new environment variables.
+
+### Block / Unblock
+
+Inbox **⋯ → Block customer** (with confirmation) / **Unblock customer**, or **Unblock** in the
+chat. The list shows a red **Blocked** tag and the chat header a **Blocked** badge.
+
+- Stored in `conversations.blocked_at`, set only by `set_customer_blocked()` (admin-only).
+  It syncs live to both sides through Realtime and survives refreshes.
+- While blocked, **no new message can be created in that chat by anyone**. A `BEFORE INSERT`
+  trigger on `messages` covers every path: text, emoji, image, voice, location and forwards.
+  The `chat_media_insert` Storage policy also refuses new uploads for a blocked chat, so an
+  attachment is rejected before upload and again when its message is finalized.
+- History, files, labels, pins, archive states and unread counts are untouched. Both sides can
+  still read the chat. The customer sees "You can't send messages in this chat right now."
+- **Limitation:** a block belongs to that guest identity's conversation. Reopening the inbox in
+  the same browser returns the same blocked chat. A **new anonymous identity** (another browser
+  or device, private window, cleared site data) is a new customer and **cannot be linked** to
+  the block.
+
+### Forward (admin only)
+
+Message **⋯ → Forward…** on text/emoji, images, voice notes and locations (not on deleted
+messages, and messages the admin hid are not shown). Search for the destination chat by name or
+HP reference, check the recipient and the preview, then click **Forward**. Locations need a
+second confirmation because the exact coordinates go to another customer. Blocked chats are
+listed but cannot be chosen.
+
+- `admin_forward_message()` creates a **new** admin message in the destination with
+  `forwarded = true`, shown as "Forwarded". The destination row contains no source ids, names,
+  profile data or paths. The link to the source is kept only in `private.message_forwards`.
+- Images and voice notes: the admin's browser first copies the file **inside Storage** to
+  `<destination chat>/<new message id>.<ext>`. That is a separate private object governed by
+  the destination's access rules. The function verifies the copy (path, type) before recording
+  the message. Source paths and signed links are never reused. Deleting the original (or the
+  source customer) does not affect the copy.
+- Ordering, Realtime, the conversation summary and unread counts behave like a normal admin
+  send. Retrying uses the same message id, so nothing is duplicated. **Discard** after a
+  failure releases an unsent copy (`admin_release_unsent_attachment()`) to the cleanup queue.
+
+### Browser test checklist (after applying both migrations)
+
+1. Block a **test** customer: both composers are replaced by the notice, and the history is
+   still readable. Refresh both: still blocked. Unblock: sending works on both sides.
+2. Forward a text with emoji, an image, a voice note and a location (with the extra
+   confirmation) to a second test inbox. Each arrives once, marked Forwarded. Media opens and
+   plays. In Storage, the copy is under the destination chat's folder.
+3. In the destination guest browser, nothing about the source customer is visible.
+4. Delete the original for everyone: the forwarded copy still opens.
+5. Try to forward to a blocked chat: it cannot be selected.
 
 ## Public launch checklist (Phase 4, not done yet)
 

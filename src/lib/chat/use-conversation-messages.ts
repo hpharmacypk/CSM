@@ -45,6 +45,8 @@ export type DisplayMessage = {
   localUrl: string | null;
   /** Readable reason when status is "failed". */
   failReason: string | null;
+  /** Sent by the admin as a forward from another chat. */
+  forwarded: boolean;
 };
 
 type PendingMessage = {
@@ -102,6 +104,11 @@ function emit(name: string, detail: Record<string, unknown>) {
   window.dispatchEvent(new CustomEvent(name, { detail }));
 }
 
+/** Failure text for a send; a block gets its own clear message. */
+function failText(error: unknown, fallback: string): string {
+  return /blocked/i.test(errorText(error)) ? "Messages are blocked in this chat." : fallback;
+}
+
 function errorText(error: unknown): string {
   if (error && typeof error === "object" && "message" in error) {
     return String((error as { message: unknown }).message);
@@ -133,6 +140,14 @@ export function useConversationMessages(
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   /** Pinned message row as this viewer may see it (RLS); null = no banner. */
   const [pinnedFetched, setPinnedFetched] = useState<Message | null>(null);
+  /**
+   * The conversation no longer exists (the admin deleted the customer). Once
+   * set it never resets: nothing on screen is restored from stale state.
+   */
+  const [gone, setGone] = useState(false);
+  const goneRef = useRef(false);
+  /** The admin blocked this conversation: nobody can send until unblocked. */
+  const [blocked, setBlocked] = useState(false);
 
   const latestSeqRef = useRef(0);
   const oldestSeqRef = useRef(0);
@@ -149,7 +164,33 @@ export function useConversationMessages(
     confirmedRef.current = confirmed;
   }, [confirmed]);
 
+  const markGone = useCallback(() => {
+    if (goneRef.current) return;
+    goneRef.current = true;
+    setGone(true);
+    setConfirmed([]);
+    setPending([]);
+    setPinnedId(null);
+  }, []);
+
+  /** False once the conversation is confirmed gone for this viewer (RLS-filtered read). */
+  const checkExists = useCallback(async () => {
+    if (goneRef.current) return false;
+    const { data, error } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (error) return true; // network/auth trouble is not evidence of deletion
+    if (!data) {
+      markGone();
+      return false;
+    }
+    return true;
+  }, [supabase, conversationId, markGone]);
+
   const addConfirmed = useCallback((rows: Message[]) => {
+    if (goneRef.current) return;
     setConfirmed((prev) => mergeMessages(prev, rows));
     const ids = new Set(rows.map((r) => r.client_message_id));
     setPending((prev) => prev.filter((p) => !ids.has(p.clientMessageId)));
@@ -165,6 +206,7 @@ export function useConversationMessages(
     catchUpRunning.current = true;
     catchUpQueued.current = false;
     try {
+      if (!(await checkExists())) return;
       // Re-check what is already on screen: messages deleted for everyone or
       // hidden ("delete for me", maybe in another tab) while we were away.
       if (latestSeqRef.current > 0 && oldestSeqRef.current > 0) {
@@ -229,8 +271,8 @@ export function useConversationMessages(
       catchUpRunning.current = false;
       setLoading(false);
     }
-    if (catchUpQueued.current) await catchUpRef.current();
-  }, [supabase, conversationId, addConfirmed]);
+    if (catchUpQueued.current && !goneRef.current) await catchUpRef.current();
+  }, [supabase, conversationId, addConfirmed, checkExists]);
 
   const catchUpRef = useRef(catchUp);
   useEffect(() => {
@@ -269,9 +311,18 @@ export function useConversationMessages(
         },
         (payload) => {
           // e.g. deleted for everyone by the sender: content arrives cleared.
-          if (!active) return;
+          if (!active || goneRef.current) return;
           const row = payload.new as Message;
           setConfirmed((prev) => (prev.some((m) => m.id === row.id) ? mergeMessages(prev, [row]) : prev));
+        },
+      )
+      .on(
+        "postgres_changes",
+        // Deletes are neither RLS-filtered nor filterable; the payload holds only
+        // the primary key, so compare it with this conversation.
+        { event: "DELETE", schema: "public", table: "conversations" },
+        (payload) => {
+          if (active && (payload.old as { id?: string } | null)?.id === conversationId) markGone();
         },
       )
       .subscribe((status) => {
@@ -297,7 +348,7 @@ export function useConversationMessages(
       document.removeEventListener("visibilitychange", onWake);
       void supabase.removeChannel(channel);
     };
-  }, [supabase, conversationId, catchUp, addConfirmed]);
+  }, [supabase, conversationId, catchUp, addConfirmed, markGone]);
 
   /**
    * Called by the thread view with the newest message the reader actually has
@@ -353,13 +404,19 @@ export function useConversationMessages(
     setLoadingOlder(false);
   }, [confirmed, loadingOlder, supabase, conversationId]);
 
-  const markFailed = useCallback((clientMessageId: string, reason: string) => {
-    setPending((prev) =>
-      prev.map((p) =>
-        p.clientMessageId === clientMessageId ? { ...p, status: "failed", failReason: reason } : p,
-      ),
-    );
-  }, []);
+  const markFailed = useCallback(
+    (clientMessageId: string, reason: string) => {
+      setPending((prev) =>
+        prev.map((p) =>
+          p.clientMessageId === clientMessageId ? { ...p, status: "failed", failReason: reason } : p,
+        ),
+      );
+      // A failed send may mean the conversation was deleted or blocked.
+      void checkExists();
+      void refreshBlockedRef.current();
+    },
+    [checkExists],
+  );
 
   /**
    * Sends (or re-sends) one pending item. Every step is idempotent for the
@@ -383,7 +440,7 @@ export function useConversationMessages(
           p_accuracy_m: accuracyM === null ? null : Math.round(accuracyM * 10) / 10,
         });
         if (error || !data) {
-          markFailed(id, "Couldn't send the location. Tap Retry.");
+          markFailed(id, failText(error, "Couldn't send the location. Tap Retry."));
           return false;
         }
         addConfirmed([data as Message]);
@@ -396,7 +453,7 @@ export function useConversationMessages(
           p_client_message_id: id,
         });
         if (error || !data) {
-          markFailed(id, "Not sent");
+          markFailed(id, failText(error, "Not sent"));
           return false;
         }
         addConfirmed([data as Message]);
@@ -441,7 +498,7 @@ export function useConversationMessages(
             },
       );
       if (error || !data) {
-        markFailed(id, `Couldn't send the ${noun}. Tap Retry.`);
+        markFailed(id, failText(error, `Couldn't send the ${noun}. Tap Retry.`));
         return false;
       }
       addConfirmed([data as Message]);
@@ -452,6 +509,7 @@ export function useConversationMessages(
 
   const enqueue = useCallback(
     (item: PendingMessage) => {
+      if (goneRef.current) return Promise.resolve(false);
       setPending((prev) => [...prev, item]);
       return deliver(item);
     },
@@ -553,7 +611,10 @@ export function useConversationMessages(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${conversationId}` },
         (payload) => {
-          if (active) setPinnedId((payload.new as { pinned_message_id?: string | null }).pinned_message_id ?? null);
+          if (!active) return;
+          const row = payload.new as { pinned_message_id?: string | null; blocked_at?: string | null };
+          setPinnedId(row.pinned_message_id ?? null);
+          if (row.blocked_at !== undefined) setBlocked(row.blocked_at !== null);
         },
       )
       .subscribe();
@@ -562,6 +623,29 @@ export function useConversationMessages(
       void supabase.removeChannel(channel);
     };
   }, [supabase, conversationId]);
+
+  // Blocked state (admin block): separate read so a database without the
+  // column (migration not applied yet) only disables this feature.
+  const refreshBlocked = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("conversations")
+      .select("blocked_at")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (!error && data) setBlocked((data as { blocked_at: string | null }).blocked_at !== null);
+  }, [supabase, conversationId]);
+  const refreshBlockedRef = useRef(refreshBlocked);
+  useEffect(() => {
+    refreshBlockedRef.current = refreshBlocked;
+  }, [refreshBlocked]);
+  useEffect(() => {
+    queueMicrotask(() => void refreshBlocked());
+    const onWake = () => {
+      if (document.visibilityState === "visible") void refreshBlocked();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    return () => document.removeEventListener("visibilitychange", onWake);
+  }, [refreshBlocked]);
 
   // Fetch the pinned message through the messages RLS policy, so a viewer who
   // hid it (or cannot see it) gets no banner content.
@@ -727,6 +811,7 @@ export function useConversationMessages(
         accuracyM: m.location_accuracy_m,
         localUrl: null,
         failReason: null,
+        forwarded: m.forwarded === true,
       })),
       ...pending
         .filter((p) => !confirmedIds.has(p.clientMessageId))
@@ -752,6 +837,7 @@ export function useConversationMessages(
           accuracyM: p.kind === "location" ? p.location.accuracyM : null,
           localUrl: p.kind === "text" || p.kind === "location" ? null : p.localUrl,
           failReason: p.failReason ?? null,
+          forwarded: false,
         })),
     ];
   }, [confirmed, pending, viewerRole]);
@@ -779,5 +865,10 @@ export function useConversationMessages(
     deleteForEveryone,
     connection,
     reload: catchUp,
+    /** The conversation was deleted; show "no longer available" instead of the thread. */
+    gone,
+    /** The admin blocked this chat: show the read-only notice instead of the composer. */
+    blocked,
+    refreshBlocked,
   };
 }

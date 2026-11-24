@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { Brand } from "@/components/Brand";
-import { ChatThread } from "@/components/chat/ChatThread";
+import { BlockedNotice, ChatThread } from "@/components/chat/ChatThread";
 import { Composer } from "@/components/chat/Composer";
 import { ConnectionBadge } from "@/components/chat/ConnectionBadge";
 import { CHAT_EVENTS, useConversationMessages } from "@/lib/chat/use-conversation-messages";
@@ -13,42 +13,74 @@ import { GuestProfileButton } from "./guest-profile";
 
 const BASE_TITLE = "H-Pharmacy Support";
 
+type ConversationRowState = { customer_unread_count?: number; customer_archived_at?: string | null };
+
 /**
- * Guest unread badge (browser tab title). Starts from the stored count, stays
- * live through Realtime, and is set immediately from mark-read results.
+ * The guest's own conversation row: unread count (also shown in the browser tab
+ * title) and the customer-side archive state. Loaded from the database (so it
+ * survives a refresh), kept live through Realtime and set immediately from
+ * mark-read / archive results.
  */
-function useGuestUnreadTitle(supabase: SupabaseClient, conversationId: string) {
+function useGuestConversationState(supabase: SupabaseClient, conversationId: string) {
+  const [unread, setUnread] = useState(0);
+  const [archivedAt, setArchivedAt] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [archiveSupported, setArchiveSupported] = useState(true);
+
   useEffect(() => {
     let active = true;
-    const apply = (n: number) => {
-      if (active) document.title = n > 0 ? `(${n}) ${BASE_TITLE}` : BASE_TITLE;
+    const apply = (row: ConversationRowState) => {
+      if (!active) return;
+      if (typeof row.customer_unread_count === "number") setUnread(row.customer_unread_count);
+      if (row.customer_archived_at !== undefined) setArchivedAt(row.customer_archived_at);
     };
-    void supabase
-      .from("conversations")
-      .select("customer_unread_count")
-      .eq("id", conversationId)
-      .maybeSingle()
-      .then(({ data }) => apply(data?.customer_unread_count ?? 0));
+    void (async () => {
+      let { data, error } = await supabase
+        .from("conversations")
+        .select("customer_unread_count, customer_archived_at")
+        .eq("id", conversationId)
+        .maybeSingle();
+      if (error) {
+        // Database without the archiving migration yet: keep the unread badge
+        // working and hide the archive control.
+        ({ data, error } = await supabase
+          .from("conversations")
+          .select("customer_unread_count")
+          .eq("id", conversationId)
+          .maybeSingle());
+        if (active) setArchiveSupported(false);
+      }
+      if (data) apply(data as ConversationRowState);
+      if (active) setLoaded(true);
+    })();
     const channel = supabase
-      .channel(`guest-unread:${conversationId}:${crypto.randomUUID()}`)
+      .channel(`guest-conversation:${conversationId}:${crypto.randomUUID()}`)
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${conversationId}` },
-        (payload) => apply((payload.new as { customer_unread_count?: number }).customer_unread_count ?? 0),
+        (payload) => apply(payload.new as ConversationRowState),
       )
       .subscribe();
     const onRead = (e: Event) => {
       const d = (e as CustomEvent<{ conversationId: string; unread: number }>).detail;
-      if (d.conversationId === conversationId) apply(d.unread);
+      if (d.conversationId === conversationId) apply({ customer_unread_count: d.unread });
     };
     window.addEventListener(CHAT_EVENTS.read, onRead);
     return () => {
       active = false;
       window.removeEventListener(CHAT_EVENTS.read, onRead);
-      document.title = BASE_TITLE;
       void supabase.removeChannel(channel);
     };
   }, [supabase, conversationId]);
+
+  useEffect(() => {
+    document.title = unread > 0 ? `(${unread}) ${BASE_TITLE}` : BASE_TITLE;
+    return () => {
+      document.title = BASE_TITLE;
+    };
+  }, [unread]);
+
+  return { unread, archivedAt, setArchivedAt, loaded, archiveSupported };
 }
 
 type BootState =
@@ -129,9 +161,12 @@ export function GuestInbox() {
     };
   }, [start]);
 
-  return (
-    <GuestFrame headerAction={boot.kind === "ready" ? <GuestProfileButton supabase={boot.supabase} /> : null}>
+  if (boot.kind === "ready") {
+    return <GuestReady key={boot.conversationId} supabase={boot.supabase} conversationId={boot.conversationId} />;
+  }
 
+  return (
+    <GuestFrame>
         {boot.kind === "starting" ? (
           <CenteredNote>
             <Spinner />
@@ -151,14 +186,137 @@ export function GuestInbox() {
               Try again
             </button>
           </CenteredNote>
+        ) : null}
+    </GuestFrame>
+  );
+}
+
+/**
+ * The guest's open inbox: chat, customer-side archive and the "deleted"
+ * state. One owner for the chat hook so nothing is reloaded from stale state.
+ */
+function GuestReady({ supabase, conversationId }: { supabase: SupabaseClient; conversationId: string }) {
+  const chat = useConversationMessages(supabase, conversationId, "customer");
+  const state = useGuestConversationState(supabase, conversationId);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+
+  const setArchived = async (archived: boolean) => {
+    setArchiveBusy(true);
+    setArchiveError(null);
+    const { data, error } = await supabase.rpc("set_my_conversation_archived", { p_archived: archived });
+    setArchiveBusy(false);
+    if (error) {
+      setArchiveError(archived ? "Couldn't archive the chat. Try again." : "Couldn't unarchive the chat. Try again.");
+      return;
+    }
+    state.setArchivedAt((data as string | null) ?? null);
+  };
+
+  if (chat.gone) {
+    return (
+      <GuestFrame>
+        <CenteredNote>
+          <span aria-hidden className="flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-surface text-muted shadow-bubble">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.1A8 8 0 1 1 20 12z" />
+              <path d="M9 10l6 6M15 10l-6 6" />
+            </svg>
+          </span>
+          <div role="status">
+            <p className="text-base font-semibold text-ink">This conversation is no longer available.</p>
+            <p className="mt-1 max-w-xs text-sm text-muted">
+              It was removed by H-Pharmacy. You can start a new chat at any time.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="h-10 rounded-full bg-brand px-5 text-sm font-semibold text-white transition hover:bg-brand-dark"
+          >
+            Start a new chat
+          </button>
+        </CenteredNote>
+      </GuestFrame>
+    );
+  }
+
+  const archived = !!state.archivedAt;
+  return (
+    <GuestFrame
+      headerAction={
+        <div className="flex min-w-0 items-center gap-1.5">
+          {state.loaded && state.archiveSupported && !archived ? (
+            <button
+              type="button"
+              onClick={() => void setArchived(true)}
+              disabled={archiveBusy}
+              aria-label="Archive chat"
+              title="Archive chat"
+              className="flex h-10 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-sm font-medium text-muted transition hover:bg-subtle hover:text-ink disabled:opacity-50"
+            >
+              <ArchiveGlyph />
+              <span className="hidden sm:inline">Archive</span>
+            </button>
+          ) : null}
+          <GuestProfileButton supabase={supabase} />
+        </div>
+      }
+    >
+      {archiveError ? (
+        <div className="shrink-0 border-b border-danger/15 bg-danger-soft px-4 py-2 text-center text-xs text-danger" role="alert">
+          {archiveError}
+        </div>
+      ) : null}
+      {archived ? (
+        <ArchivedView unread={state.unread} busy={archiveBusy} onUnarchive={() => void setArchived(false)} />
       ) : (
-        <GuestChat
-          key={boot.conversationId}
-          supabase={boot.supabase}
-          conversationId={boot.conversationId}
-        />
+        <GuestChat supabase={supabase} chat={chat} />
       )}
     </GuestFrame>
+  );
+}
+
+function ArchivedView({ unread, busy, onUnarchive }: { unread: number; busy: boolean; onUnarchive: () => void }) {
+  return (
+    <main className="flex min-h-0 flex-1 items-center justify-center p-6 text-center">
+      <div className="flex max-w-sm flex-col items-center gap-3" data-testid="archived-view">
+        <span aria-hidden className="flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-surface text-brand shadow-bubble">
+          <ArchiveGlyph size={26} />
+        </span>
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight text-ink">This chat is archived</h1>
+          <p className="mt-1.5 text-sm leading-relaxed text-muted">
+            Your messages, photos and voice notes are kept. New replies from H-Pharmacy still arrive here.
+          </p>
+        </div>
+        {unread > 0 ? (
+          <p className="inline-flex items-center gap-2 rounded-full bg-brand-soft px-3 py-1 text-sm font-semibold text-brand-ink" role="status">
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-brand px-1.5 text-[11px] font-bold text-white">
+              {unread}
+            </span>
+            new {unread === 1 ? "reply" : "replies"}
+          </p>
+        ) : null}
+        <button
+          type="button"
+          onClick={onUnarchive}
+          disabled={busy}
+          className="mt-1 h-11 rounded-full bg-brand px-6 text-sm font-semibold text-white transition hover:bg-brand-dark disabled:opacity-60"
+        >
+          {busy ? "Opening…" : "Unarchive chat"}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+function ArchiveGlyph({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" />
+    </svg>
   );
 }
 
@@ -179,14 +337,11 @@ function GuestFrame({ headerAction, children }: { headerAction?: React.ReactNode
 
 function GuestChat({
   supabase,
-  conversationId,
+  chat,
 }: {
   supabase: SupabaseClient;
-  conversationId: string;
+  chat: ReturnType<typeof useConversationMessages>;
 }) {
-  const chat = useConversationMessages(supabase, conversationId, "customer");
-  useGuestUnreadTitle(supabase, conversationId);
-
   return (
     <main className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-brand-soft/60 px-3 py-1.5 sm:px-5">
@@ -254,13 +409,19 @@ function GuestChat({
         </div>
       ) : null}
 
-      <Composer
-        onSend={chat.send}
-        onSendVoice={chat.sendVoice}
-        onSendImage={chat.sendImage}
-        onSendLocation={chat.sendLocation}
-        disabled={chat.loading}
-      />
+      {chat.blocked ? (
+        <BlockedNotice>
+          You can&apos;t send messages in this chat right now. You can still read your conversation.
+        </BlockedNotice>
+      ) : (
+        <Composer
+          onSend={chat.send}
+          onSendVoice={chat.sendVoice}
+          onSendImage={chat.sendImage}
+          onSendLocation={chat.sendLocation}
+          disabled={chat.loading}
+        />
+      )}
     </main>
   );
 }

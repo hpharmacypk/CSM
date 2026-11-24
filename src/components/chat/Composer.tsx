@@ -8,6 +8,7 @@ import { LocationPicker } from "./LocationPicker";
 import type { SharedLocation } from "@/lib/chat/use-conversation-messages";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { COMPOSER_ICON_BUTTON } from "./styles";
+import { EmojiPicker } from "./EmojiPicker";
 
 const MAX_LENGTH = 4000;
 
@@ -30,14 +31,34 @@ export function Composer({
   const [voiceActive, setVoiceActive] = useState(false);
   const [imageActive, setImageActive] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const attachmentActive = voiceActive || imageActive;
   const ref = useRef<HTMLTextAreaElement>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement>(null);
+
+  /** Insert at the caret (or replace the selection); the caret moves after it. */
+  const insertEmoji = (emoji: string) => {
+    const el = ref.current;
+    const start = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? value.length;
+    const next = value.slice(0, start) + emoji + value.slice(end);
+    if (next.length > MAX_LENGTH) return;
+    setValue(next);
+    const caret = start + emoji.length;
+    requestAnimationFrame(() => ref.current?.setSelectionRange(caret, caret));
+  };
+
+  const closeEmoji = (returnFocus: boolean) => {
+    setEmojiOpen(false);
+    if (returnFocus) emojiButtonRef.current?.focus();
+  };
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const body = value.trim();
     if (!body || disabled) return;
     setValue("");
+    setEmojiOpen(false);
     void onSend(body);
     ref.current?.focus();
   };
@@ -55,7 +76,14 @@ export function Composer({
       onSubmit={submit}
       className="shrink-0 border-t border-line bg-surface px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-3 sm:pb-[max(0.75rem,env(safe-area-inset-bottom))]"
     >
-      <div className="mx-auto flex max-w-3xl items-end gap-0.5 sm:gap-1.5">
+      <div className="relative mx-auto flex max-w-3xl items-end gap-0.5 sm:gap-1.5">
+        {emojiOpen && !attachmentActive ? (
+          <EmojiPicker
+            onPick={insertEmoji}
+            onClose={() => closeEmoji(true)}
+            className="absolute right-0 bottom-full left-0 z-30 mb-2 sm:right-auto sm:w-[22rem]"
+          />
+        ) : null}
         {/* Only one attachment flow at a time; the idle one is hidden. */}
         {onSendVoice && !imageActive ? (
           <VoiceRecorder
@@ -89,19 +117,40 @@ export function Composer({
         <label htmlFor="composer" className="sr-only">
           Message
         </label>
-        <textarea
-          hidden={attachmentActive}
-          id="composer"
-          ref={ref}
-          rows={1}
-          value={value}
-          maxLength={MAX_LENGTH}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={placeholder}
-          disabled={disabled}
-          className="field-sizing-content ml-1 max-h-40 min-h-11 min-w-0 flex-1 resize-none rounded-[22px] border border-line bg-canvas px-4 py-2.5 text-[16px] leading-6 text-ink outline-none transition placeholder:text-muted hover:border-line-strong focus:border-brand focus:bg-surface focus:ring-3 focus:ring-brand/15 disabled:opacity-60"
-        />
+        <div className="relative ml-1 flex min-w-0 flex-1" hidden={attachmentActive}>
+          <button
+            ref={emojiButtonRef}
+            type="button"
+            data-emoji-trigger
+            onClick={() => setEmojiOpen((v) => !v)}
+            disabled={disabled}
+            aria-label={emojiOpen ? "Close emoji picker" : "Insert emoji"}
+            aria-expanded={emojiOpen}
+            aria-haspopup="dialog"
+            title="Emoji"
+            className={`absolute bottom-0.5 left-0.5 z-10 flex h-10 w-10 items-center justify-center rounded-full text-brand transition hover:bg-brand-soft disabled:opacity-40 ${
+              emojiOpen ? "bg-brand-soft" : ""
+            }`}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="12" cy="12" r="9" />
+              <path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" />
+              <path d="M9 9.5h.01M15 9.5h.01" strokeWidth="3" />
+            </svg>
+          </button>
+          <textarea
+            id="composer"
+            ref={ref}
+            rows={1}
+            value={value}
+            maxLength={MAX_LENGTH}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={placeholder}
+            disabled={disabled}
+            className="field-sizing-content max-h-40 min-h-11 min-w-0 flex-1 resize-none rounded-[22px] border border-line bg-canvas py-2.5 pr-4 pl-11 text-[16px] leading-6 text-ink outline-none transition placeholder:text-muted hover:border-line-strong focus:border-brand focus:bg-surface focus:ring-3 focus:ring-brand/15 disabled:opacity-60"
+          />
+        </div>
         <button
           type="submit"
           hidden={attachmentActive}

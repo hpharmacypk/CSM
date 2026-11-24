@@ -14,6 +14,7 @@ import type { DisplayMessage } from "@/lib/chat/use-conversation-messages";
 import type { Message, SenderRole } from "@/lib/types";
 import { formatDay, formatTime } from "./format";
 import { ChatImage } from "./ChatImage";
+import { isEmojiOnly } from "./EmojiPicker";
 import { LocationCard } from "./LocationCard";
 import { VoiceNotePlayer } from "./VoiceNotePlayer";
 
@@ -37,6 +38,8 @@ type Props = {
   onUnpin: () => Promise<string | null>;
   /** Loads the message (and anything newer than it) if it isn't loaded yet. */
   onEnsureLoaded: (messageId: string) => Promise<boolean>;
+  /** Admin only: offer "Forward…" in the message menu. */
+  onForward?: (message: DisplayMessage) => void;
   emptyState: ReactNode;
   otherPartyLabel: string;
 };
@@ -60,6 +63,7 @@ export function ChatThread({
   onPin,
   onUnpin,
   onEnsureLoaded,
+  onForward,
   emptyState,
   otherPartyLabel,
 }: Props) {
@@ -332,6 +336,12 @@ export function ChatThread({
                           {otherPartyLabel}
                         </span>
                       ) : null}
+                      {m.forwarded && !m.deleted ? (
+                        <span className="mb-0.5 flex items-center gap-1 px-1 text-[11px] font-medium text-muted italic" data-testid="forwarded-label">
+                          <ForwardIcon />
+                          Forwarded
+                        </span>
+                      ) : null}
                       <div className={`relative flex items-center gap-1 ${mine ? "flex-row-reverse" : ""}`}>
                         {m.deleted ? (
                           <div className="flex items-center gap-1.5 rounded-2xl border border-dashed border-line-strong px-3.5 py-2 text-sm italic text-muted">
@@ -346,7 +356,10 @@ export function ChatThread({
                                 : mine
                                   ? `rounded-[18px] bg-brand text-white ${grouped ? "" : "rounded-tr-md"}`
                                   : `rounded-[18px] border border-line bg-surface text-ink ${grouped ? "" : "rounded-tl-md"}`
-                            } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "text" ? "px-3.5 py-2" : ""} ${m.type === "audio" ? "py-2 pr-3 pl-2" : ""} ${m.type === "location" ? "p-3" : ""}`}
+                            } ${m.status === "failed" ? "opacity-70" : ""} ${
+                              m.type === "text" ? (isEmojiOnly(m.body) ? "px-3 py-1 text-[32px] leading-[1.2]" : "px-3.5 py-2") : ""
+                            } ${m.type === "audio" ? "py-2 pr-3 pl-2" : ""} ${m.type === "location" ? "p-3" : ""}`}
+                            data-emoji-only={m.type === "text" && isEmojiOnly(m.body) ? "true" : undefined}
                           >
                             {m.type === "location" ? (
                               <LocationCard
@@ -426,6 +439,19 @@ export function ChatThread({
                                       Pin message
                                     </button>
                                   )
+                                ) : null}
+                                {onForward && !m.deleted ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setMenuFor(null);
+                                      onForward(m);
+                                    }}
+                                    className="block w-full rounded-lg px-3 py-2.5 text-left text-ink transition hover:bg-subtle"
+                                  >
+                                    Forward…
+                                  </button>
                                 ) : null}
                                 <button
                                   type="button"
@@ -648,5 +674,32 @@ function BlockIcon() {
       <circle cx="12" cy="12" r="9" />
       <path d="M5.7 5.7l12.6 12.6" />
     </svg>
+  );
+}
+
+function ForwardIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M15 5l6 6-6 6" />
+      <path d="M21 11H9a5 5 0 0 0-5 5v3" />
+    </svg>
+  );
+}
+
+/** Replaces the composer while the admin has blocked the conversation. */
+export function BlockedNotice({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <div
+      className="flex shrink-0 items-center justify-center gap-3 border-t border-line bg-surface px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-center text-sm text-muted"
+      role="status"
+      data-testid="blocked-notice"
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 text-danger" aria-hidden>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M5.7 5.7l12.6 12.6" />
+      </svg>
+      <span>{children}</span>
+      {action}
+    </div>
   );
 }

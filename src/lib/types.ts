@@ -21,6 +21,8 @@ export type Message = {
   location_accuracy_m: number | null;
   client_message_id: string;
   created_at: string;
+  /** Admin forwarded this from another chat (no source details are stored here). */
+  forwarded?: boolean;
 };
 
 export type Conversation = {

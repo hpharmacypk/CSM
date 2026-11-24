@@ -3,11 +3,14 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Avatar, customerLabel } from "@/components/Avatar";
-import { ChatThread } from "@/components/chat/ChatThread";
+import { BlockedNotice, ChatThread } from "@/components/chat/ChatThread";
 import { Composer } from "@/components/chat/Composer";
 import { ConnectionBadge } from "@/components/chat/ConnectionBadge";
-import { useConversationMessages } from "@/lib/chat/use-conversation-messages";
+import { useConversationMessages, type DisplayMessage } from "@/lib/chat/use-conversation-messages";
 import { useAdminClient } from "../../admin-client-context";
+import { ARCHIVE_CHANGED, BLOCK_CHANGED, emitArchiveChanged, emitBlockChanged } from "../../admin-data";
+import { ArchiveIcon, BlockGlyph } from "../../conversation-list";
+import { ForwardDialog } from "./forward-dialog";
 import { CustomerLabels } from "./customer-labels";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -56,6 +59,67 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
     };
   }, [supabase, conversationId]);
 
+  // Admin-side archive state (independent of the customer's).
+  const [archived, setArchived] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const load = () =>
+      void supabase
+        .from("conversation_admin_archives")
+        .select("archived_at")
+        .eq("conversation_id", conversationId)
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (active && !error) setArchived(!!data);
+        });
+    load();
+    const onChange = (e: Event) => {
+      const d = (e as CustomEvent<{ conversationId: string; archived: boolean }>).detail;
+      if (d.conversationId === conversationId) setArchived(d.archived);
+    };
+    window.addEventListener(ARCHIVE_CHANGED, onChange);
+    return () => {
+      active = false;
+      window.removeEventListener(ARCHIVE_CHANGED, onChange);
+    };
+  }, [supabase, conversationId]);
+
+  // Block state comes from the chat hook (live via Realtime); list actions in
+  // this tab refresh it immediately.
+  const [blockBusy, setBlockBusy] = useState(false);
+  const [forwarding, setForwarding] = useState<DisplayMessage | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const refreshBlocked = chat.refreshBlocked;
+  useEffect(() => {
+    const onBlock = (e: Event) => {
+      if ((e as CustomEvent<{ conversationId: string }>).detail.conversationId === conversationId) void refreshBlocked();
+    };
+    window.addEventListener(BLOCK_CHANGED, onBlock);
+    return () => window.removeEventListener(BLOCK_CHANGED, onBlock);
+  }, [conversationId, refreshBlocked]);
+
+  const unblock = async () => {
+    setBlockBusy(true);
+    const { error } = await supabase.rpc("set_customer_blocked", { p_conversation_id: conversationId, p_blocked: false });
+    setBlockBusy(false);
+    if (!error) emitBlockChanged(conversationId, false);
+  };
+
+  const toggleArchive = async () => {
+    const next = !archived;
+    setArchiveBusy(true);
+    const { error } = await supabase.rpc("set_conversation_archived", {
+      p_conversation_id: conversationId,
+      p_archived: next,
+    });
+    setArchiveBusy(false);
+    if (!error) {
+      setArchived(next);
+      emitArchiveChanged(conversationId, next);
+    }
+  };
+
   // Live profile changes (name, photo, bio) from the customer.
   useEffect(() => {
     if (!customerId) return;
@@ -75,7 +139,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
     };
   }, [supabase, customerId]);
 
-  if (meta === null) return <NotFound />;
+  if (meta === null || chat.gone) return <NotFound deleted={chat.gone} />;
   const profile = meta?.customers ?? null;
   const title = profile ? customerLabel(profile.display_name, profile.public_ref) : "…";
 
@@ -115,6 +179,27 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
             </div>
           )}
           <ConnectionBadge state={chat.connection} compact />
+          {chat.blocked ? (
+            <span className="flex h-7 shrink-0 items-center gap-1 rounded-full border border-danger/25 bg-danger-soft px-2.5 text-xs font-semibold text-danger" data-testid="blocked-badge">
+              <BlockGlyph size={12} />
+              Blocked
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void toggleArchive()}
+            disabled={archiveBusy}
+            aria-pressed={archived}
+            title={archived ? "Restore to the inbox" : "Archive this chat"}
+            className={`flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs font-semibold transition disabled:opacity-60 ${
+              archived
+                ? "border-pin/30 bg-pin-soft text-pin hover:bg-pin-soft/70"
+                : "border-line text-ink hover:border-line-strong hover:bg-subtle"
+            }`}
+          >
+            <ArchiveIcon size={14} />
+            <span className={archived ? "" : "sr-only sm:not-sr-only"}>{archived ? "Archived · Restore" : "Archive"}</span>
+          </button>
           {profile ? (
             <button
               type="button"
@@ -156,6 +241,10 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
           onPin={chat.pinMessage}
           onUnpin={chat.unpinMessage}
           onEnsureLoaded={chat.ensureLoaded}
+          onForward={(m) => {
+            setNotice(null);
+            setForwarding(m);
+          }}
           emptyState={<p className="text-sm text-muted">No messages in this conversation yet.</p>}
         />
       )}
@@ -169,14 +258,52 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
         </div>
       ) : null}
 
-      <Composer
-        onSend={chat.send}
-        onSendVoice={chat.sendVoice}
-        onSendImage={chat.sendImage}
-        onSendLocation={chat.sendLocation}
-        disabled={chat.loading}
-        placeholder="Reply to customer"
-      />
+      {notice ? (
+        <div className="shrink-0 border-t border-brand/15 bg-brand-soft px-4 py-2 text-center text-xs font-medium text-brand-ink" role="status">
+          {notice}{" "}
+          <button type="button" className="underline" onClick={() => setNotice(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {chat.blocked ? (
+        <BlockedNotice
+          action={
+            <button
+              type="button"
+              onClick={() => void unblock()}
+              disabled={blockBusy}
+              className="h-9 shrink-0 rounded-full border border-line px-4 text-xs font-semibold text-ink transition hover:bg-subtle disabled:opacity-60"
+            >
+              {blockBusy ? "Unblocking…" : "Unblock"}
+            </button>
+          }
+        >
+          This customer is blocked. Neither side can send messages.
+        </BlockedNotice>
+      ) : (
+        <Composer
+          onSend={chat.send}
+          onSendVoice={chat.sendVoice}
+          onSendImage={chat.sendImage}
+          onSendLocation={chat.sendLocation}
+          disabled={chat.loading}
+          placeholder="Reply to customer"
+        />
+      )}
+
+      {forwarding ? (
+        <ForwardDialog
+          message={forwarding}
+          sourceConversationId={conversationId}
+          onClose={() => setForwarding(null)}
+          onForwarded={(name) => {
+            setForwarding(null);
+            setNotice(`Forwarded to ${name}.`);
+          }}
+        />
+      ) : null}
 
       {showProfile && profile ? (
         <div
@@ -223,10 +350,13 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
   );
 }
 
-function NotFound() {
+function NotFound({ deleted = false }: { deleted?: boolean }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-sm text-muted">
-      <p>Conversation not found.</p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted" role="status">
+      <p className="font-medium text-ink">
+        {deleted ? "This conversation is no longer available." : "Conversation not found."}
+      </p>
+      {deleted ? <p>The customer and their chat history were deleted.</p> : null}
       <Link href="/admin" className="text-brand underline">
         Back to conversations
       </Link>
