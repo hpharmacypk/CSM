@@ -68,7 +68,7 @@ export function Avatar({
     <span
       aria-hidden
       style={style}
-      className="flex shrink-0 items-center justify-center rounded-full bg-brand-soft font-semibold text-brand-dark"
+      className="flex shrink-0 items-center justify-center rounded-full bg-brand-soft font-semibold text-brand-ink"
     >
       {initials(label)}
     </span>

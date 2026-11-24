@@ -8,6 +8,7 @@ import {
   prepareImage,
   type PreparedImage,
 } from "@/lib/chat/image";
+import { COMPOSER_ICON_BUTTON } from "./styles";
 
 type PickerState =
   | { kind: "idle" }
@@ -95,7 +96,7 @@ export function ImagePicker({ onSend, onActiveChange, disabled }: Props) {
           disabled={disabled || state.kind === "preparing"}
           aria-label="Attach an image"
           title="Attach an image (JPEG, PNG or WebP)"
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-brand transition hover:bg-brand-soft disabled:opacity-40"
+          className={COMPOSER_ICON_BUTTON}
         >
           {state.kind === "preparing" ? (
             <span
@@ -113,7 +114,7 @@ export function ImagePicker({ onSend, onActiveChange, disabled }: Props) {
   if (state.kind === "error") {
     return (
       <div
-        className="flex min-h-11 flex-1 items-center gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-2"
+        className="flex min-h-11 flex-1 items-center gap-3 rounded-2xl border border-danger/20 bg-danger-soft px-4 py-2"
         role="alert"
       >
         <p className="flex-1 text-sm text-danger">{state.message}</p>

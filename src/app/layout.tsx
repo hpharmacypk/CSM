@@ -11,7 +11,9 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: "#0f7a5f",
+  // Android Chrome: shrink the layout when the keyboard opens so the composer stays visible.
+  interactiveWidget: "resizes-content",
+  themeColor: "#fffefb",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

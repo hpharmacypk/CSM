@@ -62,7 +62,7 @@ export function MapPicker({
 
       const icon = L.divIcon({
         className: "hp-map-pin",
-        html: '<svg width="34" height="44" viewBox="0 0 24 31" aria-hidden="true"><path d="M12 30s-10-9-10-17a10 10 0 0 1 20 0c0 8-10 17-10 17z" fill="#0f7a5f" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12.5" r="3.6" fill="#fff"/></svg>',
+        html: '<svg width="34" height="44" viewBox="0 0 24 31" aria-hidden="true"><path d="M12 30s-10-9-10-17a10 10 0 0 1 20 0c0 8-10 17-10 17z" fill="#0c6b4f" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12.5" r="3.6" fill="#fff"/></svg>',
         iconSize: [34, 44],
         iconAnchor: [17, 43],
       });

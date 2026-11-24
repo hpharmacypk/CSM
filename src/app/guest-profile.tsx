@@ -47,11 +47,11 @@ export function GuestProfileButton({ supabase }: { supabase: SupabaseClient }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex min-w-0 items-center gap-2 rounded-full border border-line py-1 pl-1 pr-3 text-sm text-ink hover:bg-canvas"
+        className="flex h-10 min-w-0 shrink-0 items-center gap-2 rounded-full border border-line bg-surface py-1 pl-1 pr-3.5 text-sm font-medium text-ink transition hover:border-line-strong hover:bg-subtle"
         aria-label="My profile"
       >
         <Avatar supabase={supabase} path={profile.avatar_path} label={profile.display_name ?? "You"} size={30} />
-        <span className="max-w-[9rem] truncate">{profile.display_name ? label : "My profile"}</span>
+        <span className="max-w-[7.5rem] truncate sm:max-w-[10rem]">{profile.display_name ? label : "My profile"}</span>
       </button>
       {open ? (
         <ProfilePanel
@@ -155,7 +155,7 @@ function ProfilePanel({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-4"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-[2px] sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="my-profile-title"
@@ -164,13 +164,13 @@ function ProfilePanel({
       <form
         onSubmit={save}
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-surface p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-xl sm:rounded-2xl"
+        className="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-t-3xl border border-line bg-surface p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-dialog sm:rounded-2xl"
       >
         <div className="flex items-center justify-between">
-          <h2 id="my-profile-title" className="text-lg font-semibold text-ink">
+          <h2 id="my-profile-title" className="text-lg font-semibold tracking-tight text-ink">
             My profile
           </h2>
-          <button type="button" onClick={onClose} disabled={!!busy} className="rounded-full px-3 py-1 text-sm text-muted hover:bg-canvas">
+          <button type="button" onClick={onClose} disabled={!!busy} className="-mr-2 h-9 rounded-full px-3 text-sm font-medium text-muted transition hover:bg-subtle hover:text-ink">
             Close
           </button>
         </div>
@@ -179,7 +179,7 @@ function ProfilePanel({
           <span className="font-mono">{profile.public_ref}</span>.
         </p>
 
-        <div className="mt-4 flex items-center gap-4">
+        <div className="mt-5 flex items-center gap-4 rounded-2xl border border-line bg-canvas p-3">
           <Avatar supabase={supabase} path={profile.avatar_path} label={profile.display_name ?? "You"} size={72} />
           <div className="flex flex-wrap gap-2">
             <input ref={fileRef} type="file" accept={IMAGE_ACCEPT} className="hidden" onChange={(e) => void onPhoto(e)} data-testid="avatar-input" />
@@ -187,7 +187,7 @@ function ProfilePanel({
               type="button"
               disabled={!!busy}
               onClick={() => fileRef.current?.click()}
-              className="h-9 rounded-full border border-line px-4 text-sm font-medium text-ink hover:bg-canvas disabled:opacity-60"
+              className="h-9 rounded-full border border-line bg-surface px-4 text-sm font-medium text-ink transition hover:border-line-strong disabled:opacity-60"
             >
               {busy === "photo" ? "Working…" : profile.avatar_path ? "Change photo" : "Add photo"}
             </button>
@@ -196,7 +196,7 @@ function ProfilePanel({
                 type="button"
                 disabled={!!busy}
                 onClick={() => void removePhoto()}
-                className="h-9 rounded-full px-3 text-sm text-danger hover:bg-canvas disabled:opacity-60"
+                className="h-9 rounded-full px-3 text-sm font-medium text-danger transition hover:bg-danger-soft disabled:opacity-60"
               >
                 Remove photo
               </button>
@@ -204,7 +204,7 @@ function ProfilePanel({
           </div>
         </div>
 
-        <label htmlFor="profile-name" className="mt-5 block text-sm font-medium text-ink">
+        <label htmlFor="profile-name" className="mt-5 block text-sm font-semibold text-ink">
           Display name
         </label>
         <input
@@ -214,10 +214,10 @@ function ProfilePanel({
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Ayesha"
           autoComplete="name"
-          className="mt-1 w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-[16px] outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+          className="mt-1 w-full rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-[16px] text-ink outline-none transition placeholder:text-muted/80 hover:border-line-strong focus:border-brand focus:bg-surface focus:ring-3 focus:ring-brand/15"
         />
 
-        <label htmlFor="profile-bio" className="mt-4 block text-sm font-medium text-ink">
+        <label htmlFor="profile-bio" className="mt-4 block text-sm font-semibold text-ink">
           Short bio
         </label>
         <textarea
@@ -227,14 +227,14 @@ function ProfilePanel({
           rows={3}
           onChange={(e) => setBio(e.target.value)}
           placeholder="Anything that helps us help you, e.g. preferred delivery time."
-          className="mt-1 w-full resize-none rounded-lg border border-line bg-canvas px-3 py-2.5 text-[16px] outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+          className="mt-1 w-full resize-none rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-[16px] text-ink outline-none transition placeholder:text-muted/80 hover:border-line-strong focus:border-brand focus:bg-surface focus:ring-3 focus:ring-brand/15"
         />
         <div className="mt-1 text-right text-[11px] text-muted">
           {bio.length}/{BIO_MAX}
         </div>
 
         {message ? (
-          <p className={`mt-2 text-sm ${message.kind === "ok" ? "text-brand-dark" : "text-danger"}`} role={message.kind === "error" ? "alert" : "status"}>
+          <p className={`mt-2 text-sm ${message.kind === "ok" ? "text-brand-ink" : "text-danger"}`} role={message.kind === "error" ? "alert" : "status"}>
             {message.text}
           </p>
         ) : null}
@@ -248,7 +248,7 @@ function ProfilePanel({
                 setName("");
                 setBio("");
               }}
-              className="h-10 rounded-full px-4 text-sm text-muted hover:bg-canvas"
+              className="h-10 rounded-full px-4 text-sm font-medium text-muted transition hover:bg-subtle hover:text-ink"
             >
               Clear fields
             </button>
@@ -256,7 +256,7 @@ function ProfilePanel({
           <button
             type="submit"
             disabled={!!busy}
-            className="h-10 rounded-full bg-brand px-5 text-sm font-semibold text-white hover:bg-brand-dark disabled:opacity-60"
+            className="h-10 rounded-full bg-brand px-6 text-sm font-semibold text-white transition hover:bg-brand-dark disabled:opacity-60"
           >
             {busy === "save" ? "Saving…" : "Save"}
           </button>

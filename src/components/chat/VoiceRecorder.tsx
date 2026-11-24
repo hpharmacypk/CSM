@@ -13,6 +13,7 @@ import {
   voiceUnsupportedReason,
   type VoiceRecording,
 } from "@/lib/chat/voice";
+import { COMPOSER_ICON_BUTTON } from "./styles";
 
 type RecorderState =
   | { kind: "idle" }
@@ -209,7 +210,7 @@ export function VoiceRecorder({ onSend, onActiveChange, disabled }: Props) {
         disabled={disabled || state.kind === "requesting"}
         aria-label="Record a voice note"
         title="Record a voice note"
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-brand transition hover:bg-brand-soft disabled:opacity-40"
+        className={COMPOSER_ICON_BUTTON}
       >
         {state.kind === "requesting" ? <Spinner /> : <MicIcon />}
       </button>
@@ -218,7 +219,7 @@ export function VoiceRecorder({ onSend, onActiveChange, disabled }: Props) {
 
   if (state.kind === "error") {
     return (
-      <div className="flex min-h-11 flex-1 items-center gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-2" role="alert">
+      <div className="flex min-h-11 flex-1 items-center gap-3 rounded-2xl border border-danger/20 bg-danger-soft px-4 py-2" role="alert">
         <p className="flex-1 text-sm text-danger">{state.message}</p>
         <button type="button" onClick={() => go({ kind: "idle" })} className="shrink-0 text-sm font-medium text-ink underline">
           OK

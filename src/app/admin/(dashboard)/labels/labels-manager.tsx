@@ -104,12 +104,14 @@ export function LabelsManager() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
-        <Link href="/admin" className="rounded-full px-2 py-1 text-sm text-brand md:hidden" aria-label="Back to conversations">
-          ←
+      <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-2 py-2.5 sm:px-5 sm:py-3">
+        <Link href="/admin" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-brand transition hover:bg-brand-soft md:hidden" aria-label="Back to conversations">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
         </Link>
-        <div>
-          <h1 className="text-sm font-semibold text-ink">Labels</h1>
+        <div className="min-w-0 px-1">
+          <h1 className="text-[15px] font-semibold tracking-tight text-ink">Labels</h1>
           <p className="text-xs text-muted">Only visible to admins. Customers never see labels.</p>
         </div>
       </div>
@@ -126,19 +128,19 @@ export function LabelsManager() {
               maxLength={MAX}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="New label, e.g. Pending Order"
-              className="min-w-0 flex-1 rounded-lg border border-line bg-canvas px-3 py-2.5 text-[16px] outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+              className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-3.5 py-2.5 text-[16px] text-ink outline-none transition hover:border-line-strong focus:border-brand focus:ring-3 focus:ring-brand/15"
             />
             <button
               type="submit"
               disabled={busy || !normalize(newName)}
-              className="h-11 shrink-0 rounded-lg bg-brand px-4 text-sm font-semibold text-white hover:bg-brand-dark disabled:opacity-40"
+              className="h-11 shrink-0 rounded-xl bg-brand px-5 text-sm font-semibold text-white transition hover:bg-brand-dark disabled:opacity-40"
             >
               Add
             </button>
           </form>
 
           {message ? (
-            <p className={`mt-3 text-sm ${message.kind === "ok" ? "text-brand-dark" : "text-danger"}`} role={message.kind === "error" ? "alert" : "status"}>
+            <p className={`mt-3 text-sm ${message.kind === "ok" ? "text-brand-ink" : "text-danger"}`} role={message.kind === "error" ? "alert" : "status"}>
               {message.text}
             </p>
           ) : null}
@@ -150,7 +152,7 @@ export function LabelsManager() {
               No labels yet. Try “Pending Order”, “Complete” or “Regular Customer”.
             </p>
           ) : (
-            <ul className="mt-4 divide-y divide-line rounded-xl border border-line bg-surface">
+            <ul className="mt-5 divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface shadow-bubble">
               {labels.map((l) =>
                 editing?.id === l.id ? (
                   <li key={l.id} className="p-3">
@@ -169,21 +171,26 @@ export function LabelsManager() {
                       <button type="submit" disabled={busy} className="rounded-lg bg-brand px-3 text-sm font-semibold text-white disabled:opacity-40">
                         Save
                       </button>
-                      <button type="button" onClick={() => setEditing(null)} className="rounded-lg px-3 text-sm text-muted hover:bg-canvas">
+                      <button type="button" onClick={() => setEditing(null)} className="rounded-lg px-3 text-sm text-muted hover:bg-subtle">
                         Cancel
                       </button>
                     </form>
                   </li>
                 ) : (
-                  <li key={l.id} className="flex items-center gap-3 px-3 py-2.5">
-                    <span className="rounded-full bg-brand-soft px-2.5 py-0.5 text-sm font-medium text-brand-dark">{l.name}</span>
-                    <span className="flex-1 text-xs text-muted">
-                      {counts[l.id] ?? 0} customer{(counts[l.id] ?? 0) === 1 ? "" : "s"}
-                    </span>
-                    <button type="button" onClick={() => setEditing({ id: l.id, name: l.name })} className="rounded-lg px-2.5 py-1 text-sm text-ink hover:bg-canvas">
+                  <li key={l.id} className="flex items-center gap-2 py-2 pr-2 pl-3">
+                    <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5 sm:flex-row sm:items-center sm:gap-3">
+                      <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-line bg-canvas px-2 py-0.5 text-sm font-medium text-ink">
+                        <span aria-hidden className="h-2 w-2 shrink-0 rounded-full bg-brand/60" />
+                        <span className="truncate">{l.name}</span>
+                      </span>
+                      <span className="text-xs whitespace-nowrap text-muted">
+                        {counts[l.id] ?? 0} customer{(counts[l.id] ?? 0) === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <button type="button" onClick={() => setEditing({ id: l.id, name: l.name })} className="h-9 shrink-0 rounded-lg px-2.5 text-sm font-medium text-ink transition hover:bg-subtle">
                       Rename
                     </button>
-                    <button type="button" onClick={() => setConfirmDelete(l)} className="rounded-lg px-2.5 py-1 text-sm text-danger hover:bg-canvas">
+                    <button type="button" onClick={() => setConfirmDelete(l)} className="h-9 shrink-0 rounded-lg px-2.5 text-sm font-medium text-danger transition hover:bg-danger-soft">
                       Delete
                     </button>
                   </li>
@@ -195,8 +202,8 @@ export function LabelsManager() {
       </div>
 
       {confirmDelete ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="delete-label-title" onClick={() => !busy && setConfirmDelete(null)}>
-          <div className="w-full max-w-sm rounded-2xl bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-[2px] p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="delete-label-title" onClick={() => !busy && setConfirmDelete(null)}>
+          <div className="w-full max-w-sm rounded-2xl border border-line bg-surface p-5 shadow-dialog" onClick={(e) => e.stopPropagation()}>
             <h2 id="delete-label-title" className="text-base font-semibold text-ink">
               Delete “{confirmDelete.name}”?
             </h2>
@@ -205,7 +212,7 @@ export function LabelsManager() {
               and messages are not affected.
             </p>
             <div className="mt-5 flex justify-end gap-2">
-              <button type="button" disabled={busy} onClick={() => setConfirmDelete(null)} className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-canvas">
+              <button type="button" disabled={busy} onClick={() => setConfirmDelete(null)} className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-subtle">
                 Cancel
               </button>
               <button type="button" disabled={busy} onClick={() => void remove()} className="h-10 rounded-full bg-danger px-4 text-sm font-semibold text-white disabled:opacity-60">

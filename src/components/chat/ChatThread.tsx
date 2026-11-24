@@ -135,6 +135,21 @@ export function ChatThread({
     return () => cancelAnimationFrame(id);
   }, [messages, viewerRole, reportIfViewed]);
 
+  // Keep the newest message in view when the thread shrinks (e.g. the mobile
+  // keyboard opens or the composer grows) while the reader is at the bottom.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let lastHeight = el.clientHeight;
+    const ro = new ResizeObserver(() => {
+      const h = el.clientHeight;
+      if (h < lastHeight && nearBottom.current) el.scrollTop = el.scrollHeight;
+      lastHeight = h;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") reportIfViewed();
@@ -220,9 +235,12 @@ export function ChatThread({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {notice ? (
-        <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-center gap-3 bg-red-50 px-4 py-2 text-xs text-danger" role="alert">
-          {notice}
-          <button type="button" className="underline" onClick={() => setNotice(null)}>
+        <div
+          className="absolute inset-x-3 top-2 z-20 mx-auto flex max-w-md items-center justify-center gap-3 rounded-xl border border-danger/20 bg-danger-soft px-4 py-2 text-xs text-danger shadow-pop"
+          role="alert"
+        >
+          <span className="min-w-0 flex-1">{notice}</span>
+          <button type="button" className="shrink-0 rounded font-semibold underline" onClick={() => setNotice(null)}>
             Dismiss
           </button>
         </div>
@@ -233,12 +251,15 @@ export function ChatThread({
           <button
             type="button"
             onClick={() => void jumpToPinned()}
-            className="flex min-w-0 flex-1 items-center gap-2 px-4 py-2 text-left hover:bg-canvas"
+            className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2 text-left transition hover:bg-subtle sm:px-6"
             aria-label="Go to pinned message"
           >
-            <span aria-hidden className="text-base">📌</span>
+            <span aria-hidden className="h-8 w-1 shrink-0 rounded-full bg-pin" />
             <span className="min-w-0">
-              <span className="block text-[11px] font-semibold uppercase tracking-wide text-brand-dark">Pinned message</span>
+              <span className="flex items-center gap-1 text-[11px] font-semibold text-pin">
+                <PinIcon size={12} />
+                Pinned message
+              </span>
               <span className="block truncate text-sm text-ink">{pinnedPreview(pinnedMessage)}</span>
             </span>
           </button>
@@ -246,7 +267,7 @@ export function ChatThread({
             type="button"
             onClick={() => void runAction(onUnpin)}
             disabled={busy}
-            className="shrink-0 px-4 text-xs font-medium text-muted hover:bg-canvas hover:text-ink"
+            className="m-1.5 shrink-0 rounded-lg px-3 text-xs font-medium text-muted transition hover:bg-subtle hover:text-ink disabled:opacity-50 sm:mr-4"
             aria-label="Unpin message"
           >
             Unpin
@@ -257,7 +278,7 @@ export function ChatThread({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-6"
+        className="hp-scroll flex-1 overflow-y-auto overscroll-contain px-3 pt-3 pb-4 sm:px-6"
         role="log"
         aria-live="polite"
         aria-relevant="additions"
@@ -268,7 +289,7 @@ export function ChatThread({
               type="button"
               onClick={onLoadOlder}
               disabled={loadingOlder}
-              className="rounded-full border border-line bg-surface px-4 py-1.5 text-xs font-medium text-muted hover:bg-canvas disabled:opacity-60"
+              className="rounded-full border border-line bg-surface px-4 py-1.5 text-xs font-medium text-ink shadow-bubble transition hover:border-line-strong disabled:opacity-60"
             >
               {loadingOlder ? "Loading…" : "Load earlier messages"}
             </button>
@@ -289,36 +310,43 @@ export function ChatThread({
               return (
                 <Fragment key={m.key}>
                   {showDay ? (
-                    <li className="my-3 text-center text-[11px] font-medium uppercase tracking-wide text-muted">
-                      {day}
+                    <li className="my-4 flex items-center gap-3 first:mt-1" aria-label={day}>
+                      <span aria-hidden className="h-px flex-1 bg-line" />
+                      <span className="rounded-full border border-line bg-surface px-3 py-0.5 text-[11px] font-medium text-muted">
+                        {day}
+                      </span>
+                      <span aria-hidden className="h-px flex-1 bg-line" />
                     </li>
                   ) : null}
                   <li
-                    className={`group flex rounded-xl transition-colors duration-700 ${mine ? "justify-end" : "justify-start"} ${grouped ? "" : "mt-2"} ${
-                      highlightId !== null && highlightId === m.id ? "bg-amber-100" : ""
+                    className={`group -mx-2 flex rounded-xl px-2 transition-colors duration-700 ${mine ? "justify-end" : "justify-start"} ${grouped ? "pt-0.5" : "pt-2.5"} ${
+                      highlightId !== null && highlightId === m.id ? "bg-pin-soft" : ""
                     }`}
                     data-message-id={m.id ?? undefined}
                   >
                     <div
-                      className={`flex max-w-[85%] flex-col sm:max-w-[70%] ${mine ? "items-end" : "items-start"}`}
+                      className={`flex max-w-[86%] flex-col sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}
                     >
                       {!mine && !grouped ? (
-                        <span className="mb-0.5 px-1 text-[11px] font-medium text-muted">
+                        <span className="mb-1 px-1 text-xs font-semibold text-brand-ink">
                           {otherPartyLabel}
                         </span>
                       ) : null}
                       <div className={`relative flex items-center gap-1 ${mine ? "flex-row-reverse" : ""}`}>
                         {m.deleted ? (
-                          <div className="rounded-2xl border border-dashed border-line bg-surface px-3.5 py-2 text-[14px] italic text-muted">
+                          <div className="flex items-center gap-1.5 rounded-2xl border border-dashed border-line-strong px-3.5 py-2 text-sm italic text-muted">
+                            <BlockIcon />
                             This message was deleted
                           </div>
                         ) : (
                           <div
-                            className={`whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[15px] leading-snug shadow-sm ${
-                              mine
-                                ? "rounded-br-md bg-brand text-white"
-                                : "rounded-bl-md border border-line bg-surface text-ink"
-                            } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "audio" ? "px-2 py-2" : ""} ${m.type === "image" ? "p-1" : ""} ${m.type === "location" ? "px-3 py-2.5" : ""}`}
+                            className={`whitespace-pre-wrap break-words text-[15px] leading-[1.4] shadow-bubble ${
+                              m.type === "image"
+                                ? "rounded-2xl border border-line bg-surface p-1"
+                                : mine
+                                  ? `rounded-[18px] bg-brand text-white ${grouped ? "" : "rounded-tr-md"}`
+                                  : `rounded-[18px] border border-line bg-surface text-ink ${grouped ? "" : "rounded-tl-md"}`
+                            } ${m.status === "failed" ? "opacity-70" : ""} ${m.type === "text" ? "px-3.5 py-2" : ""} ${m.type === "audio" ? "py-2 pr-3 pl-2" : ""} ${m.type === "location" ? "p-3" : ""}`}
                           >
                             {m.type === "location" ? (
                               <LocationCard
@@ -342,6 +370,7 @@ export function ChatThread({
                                 localUrl={m.localUrl}
                                 mime={m.attachmentMime}
                                 durationMs={m.durationMs}
+                                mine={mine}
                               />
                             ) : (
                               m.body
@@ -357,8 +386,8 @@ export function ChatThread({
                               aria-haspopup="menu"
                               aria-expanded={menuOpen}
                               onClick={() => setMenuFor(menuOpen ? null : m.id)}
-                              className={`flex h-8 w-8 items-center justify-center rounded-full text-muted hover:bg-black/5 focus:opacity-100 ${
-                                menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-60"
+                              className={`flex h-8 w-8 items-center justify-center rounded-full text-muted transition hover:bg-subtle hover:text-ink focus-visible:opacity-100 ${
+                                menuOpen ? "bg-subtle text-ink opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-70"
                               }`}
                             >
                               <DotsIcon />
@@ -366,8 +395,10 @@ export function ChatThread({
                             {menuOpen ? (
                               <div
                                 role="menu"
-                                className={`absolute bottom-full z-30 mb-1 min-w-44 overflow-hidden rounded-xl border border-line bg-surface py-1 text-sm shadow-lg ${
-                                  mine ? "right-0" : "left-0"
+                                // Open over the bubble (the options button sits on the
+                                // bubble's outer side), so the menu never leaves the screen.
+                                className={`absolute bottom-full z-30 mb-1 w-max max-w-[calc(100vw-2rem)] min-w-48 overflow-hidden rounded-xl border border-line bg-surface p-1 text-sm shadow-pop ${
+                                  mine ? "left-0" : "right-0"
                                 }`}
                               >
                                 {!m.deleted ? (
@@ -380,7 +411,7 @@ export function ChatThread({
                                         setMenuFor(null);
                                         void runAction(onUnpin);
                                       }}
-                                      className="block w-full px-4 py-2.5 text-left text-ink hover:bg-canvas"
+                                      className="block w-full rounded-lg px-3 py-2.5 text-left text-ink transition hover:bg-subtle disabled:opacity-50"
                                     >
                                       Unpin message
                                     </button>
@@ -390,7 +421,7 @@ export function ChatThread({
                                       role="menuitem"
                                       disabled={busy}
                                       onClick={() => requestPin(m)}
-                                      className="block w-full px-4 py-2.5 text-left text-ink hover:bg-canvas"
+                                      className="block w-full rounded-lg px-3 py-2.5 text-left text-ink transition hover:bg-subtle disabled:opacity-50"
                                     >
                                       Pin message
                                     </button>
@@ -404,7 +435,7 @@ export function ChatThread({
                                     setMenuFor(null);
                                     void runAction(() => onHideForMe(m.id as string));
                                   }}
-                                  className="block w-full px-4 py-2.5 text-left text-ink hover:bg-canvas"
+                                  className="block w-full rounded-lg px-3 py-2.5 text-left text-ink transition hover:bg-subtle disabled:opacity-50"
                                 >
                                   Delete for me
                                 </button>
@@ -417,7 +448,7 @@ export function ChatThread({
                                       setMenuFor(null);
                                       setConfirmFor(m);
                                     }}
-                                    className="block w-full px-4 py-2.5 text-left text-danger hover:bg-canvas"
+                                    className="block w-full rounded-lg px-3 py-2.5 text-left font-medium text-danger transition hover:bg-danger-soft disabled:opacity-50"
                                   >
                                     Delete for everyone
                                   </button>
@@ -427,31 +458,34 @@ export function ChatThread({
                           </div>
                         ) : null}
                       </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 px-1 text-[11px] text-muted">
+                      <div className={`mt-1 flex flex-wrap items-center gap-x-2 px-1 text-[11px] leading-4 text-muted ${mine ? "justify-end" : ""}`}>
                         {m.status === "sending" ? (
                           <span>{m.type === "text" ? "Sending…" : "Uploading…"}</span>
                         ) : null}
                         {m.status === "failed" ? (
                           <>
-                            <span className="text-danger">{m.failReason ?? "Not sent"}</span>
+                            <span className="font-medium text-danger">{m.failReason ?? "Not sent"}</span>
                             <button
                               type="button"
                               onClick={() => onRetry(m.clientMessageId)}
-                              className="font-medium text-brand underline"
+                              className="rounded-full bg-brand-soft px-2 py-0.5 font-semibold text-brand-ink hover:bg-brand hover:text-white"
                             >
                               Retry
                             </button>
                             <button
                               type="button"
                               onClick={() => onDiscard(m.clientMessageId)}
-                              className="underline"
+                              className="rounded-full px-1.5 py-0.5 underline hover:text-ink"
                             >
                               Remove
                             </button>
                           </>
                         ) : null}
                         {m.status === "sent" && m.id !== null && m.id === pinnedId && !m.deleted ? (
-                          <span aria-label="Pinned">📌</span>
+                          <span className="inline-flex items-center gap-0.5 font-medium text-pin">
+                            <PinIcon size={11} />
+                            Pinned
+                          </span>
                         ) : null}
                         {m.status === "sent" ? (
                           <time dateTime={m.createdAt}>{formatTime(m.createdAt)}</time>
@@ -470,21 +504,27 @@ export function ChatThread({
         <button
           type="button"
           onClick={jumpToLatest}
-          className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-brand px-4 py-1.5 text-xs font-semibold text-white shadow-lg"
+          className="absolute bottom-3 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-brand py-1.5 pr-3 pl-2 text-xs font-semibold text-white shadow-pop transition hover:bg-brand-dark"
         >
-          {unseenCount} new message{unseenCount === 1 ? "" : "s"} ↓
+          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1 text-[11px] font-bold text-brand-ink">
+            {unseenCount}
+          </span>
+          new message{unseenCount === 1 ? "" : "s"}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M12 5v14M6 13l6 6 6-6" />
+          </svg>
         </button>
       ) : null}
 
       {replacePinFor ? (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-[2px] p-4 sm:items-center"
           role="dialog"
           aria-modal="true"
           aria-labelledby="replace-pin-title"
           onClick={() => !busy && setReplacePinFor(null)}
         >
-          <div className="w-full max-w-sm rounded-2xl bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-sm rounded-2xl border border-line bg-surface p-5 shadow-dialog" onClick={(e) => e.stopPropagation()}>
             <h2 id="replace-pin-title" className="text-base font-semibold text-ink">
               Replace pinned message?
             </h2>
@@ -498,7 +538,7 @@ export function ChatThread({
                 type="button"
                 disabled={busy}
                 onClick={() => setReplacePinFor(null)}
-                className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-canvas"
+                className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-subtle"
               >
                 Cancel
               </button>
@@ -524,13 +564,13 @@ export function ChatThread({
 
       {confirmFor ? (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-[2px] p-4 sm:items-center"
           role="dialog"
           aria-modal="true"
           aria-labelledby="delete-everyone-title"
           onClick={() => !busy && setConfirmFor(null)}
         >
-          <div className="w-full max-w-sm rounded-2xl bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-sm rounded-2xl border border-line bg-surface p-5 shadow-dialog" onClick={(e) => e.stopPropagation()}>
             <h2 id="delete-everyone-title" className="text-base font-semibold text-ink">
               Delete for everyone?
             </h2>
@@ -543,7 +583,7 @@ export function ChatThread({
                 type="button"
                 disabled={busy}
                 onClick={() => setConfirmFor(null)}
-                className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-canvas"
+                className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-subtle"
               >
                 Cancel
               </button>
@@ -592,4 +632,21 @@ function pinnedPreview(m: Message): string {
     default:
       return (m.body ?? "").replace(/\s+/g, " ").slice(0, 120);
   }
+}
+
+export function PinIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M15.2 2.6a1 1 0 0 1 1.4 0l4.8 4.8a1 1 0 0 1 0 1.4l-1.1 1.1a1 1 0 0 1-1 .25l-.6-.2-3.3 3.3.4 2.6a1 1 0 0 1-.28.86l-1.2 1.2a1 1 0 0 1-1.4 0l-3.2-3.2-4.5 4.5a1 1 0 0 1-1.4-1.4l4.5-4.5-3.2-3.2a1 1 0 0 1 0-1.4l1.2-1.2a1 1 0 0 1 .86-.28l2.6.4 3.3-3.3-.2-.6a1 1 0 0 1 .25-1z" />
+    </svg>
+  );
+}
+
+function BlockIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M5.7 5.7l12.6 12.6" />
+    </svg>
+  );
 }

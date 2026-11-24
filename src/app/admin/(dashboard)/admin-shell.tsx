@@ -27,21 +27,24 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   return (
     <AdminClientContext value={supabase}>
-      <div className="flex h-full flex-col">
-        <header className="flex items-center justify-between border-b border-line bg-surface px-4 py-3">
-          <Brand subtitle="Support inbox" />
-          <nav className="ml-auto mr-2 flex items-center gap-1 text-sm" aria-label="Admin sections">
+      <div className="flex h-full flex-col bg-canvas">
+        {/* On phones an open chat gets the full screen; its own header has a back button. */}
+        <header
+          className={`${inThread ? "hidden md:flex" : "flex"} h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-3 sm:px-4`}
+        >
+          <Brand subtitle="Support inbox" className="h-10" subtitleOnMobile={false} />
+          <nav className="ml-auto flex items-center gap-0.5 rounded-full border border-line bg-canvas p-0.5 text-sm" aria-label="Admin sections">
             <Link
               href="/admin"
               aria-current={!onLabels ? "page" : undefined}
-              className={`rounded-full px-3 py-1.5 ${!onLabels ? "bg-brand-soft font-semibold text-brand-dark" : "text-muted hover:bg-canvas"}`}
+              className={`rounded-full px-3 py-1.5 transition ${!onLabels ? "bg-surface font-semibold text-brand-ink shadow-bubble" : "text-muted hover:text-ink"}`}
             >
               Inbox
             </Link>
             <Link
               href="/admin/labels"
               aria-current={onLabels ? "page" : undefined}
-              className={`rounded-full px-3 py-1.5 ${onLabels ? "bg-brand-soft font-semibold text-brand-dark" : "text-muted hover:bg-canvas"}`}
+              className={`rounded-full px-3 py-1.5 transition ${onLabels ? "bg-surface font-semibold text-brand-ink shadow-bubble" : "text-muted hover:text-ink"}`}
             >
               Labels
             </Link>
@@ -50,18 +53,23 @@ export function AdminShell({ children }: { children: ReactNode }) {
             type="button"
             onClick={signOut}
             disabled={signingOut}
-            className="rounded-full border border-line px-3 py-1.5 text-xs font-medium text-muted hover:bg-canvas disabled:opacity-60"
+            aria-label={signingOut ? "Signing out" : "Sign out"}
+            title="Sign out"
+            className="flex h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-muted transition hover:bg-subtle hover:text-ink disabled:opacity-60"
           >
-            {signingOut ? "Signing out…" : "Sign out"}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10" />
+            </svg>
+            <span className="hidden sm:inline">{signingOut ? "Signing out…" : "Sign out"}</span>
           </button>
         </header>
         <div className="flex min-h-0 flex-1">
           <aside
-            className={`${inThread ? "hidden md:flex" : "flex"} w-full flex-col border-r border-line bg-surface md:w-80 lg:w-96`}
+            className={`${inThread ? "hidden md:flex" : "flex"} w-full flex-col border-r border-line bg-surface md:w-[22rem] lg:w-96`}
           >
             <ConversationList />
           </aside>
-          <section className={`${inThread ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
+          <section className={`${inThread ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col bg-canvas`}>
             {children}
           </section>
         </div>

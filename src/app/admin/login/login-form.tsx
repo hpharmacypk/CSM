@@ -42,49 +42,57 @@ export function LoginForm() {
     router.refresh();
   };
 
+  const field =
+    "mt-1.5 w-full rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-[16px] text-ink outline-none transition hover:border-line-strong focus:border-brand focus:bg-surface focus:ring-3 focus:ring-brand/15";
+
   return (
     <form
       onSubmit={onSubmit}
-      className="w-full max-w-sm rounded-2xl border border-line bg-surface p-6 shadow-sm"
+      className="w-full overflow-hidden rounded-2xl border border-line bg-surface shadow-pop"
     >
-      <Brand subtitle="Support admin" />
-      <h1 className="mt-6 text-lg font-semibold text-ink">Sign in</h1>
-      <label className="mt-4 block text-sm font-medium text-ink" htmlFor="email">
-        Email
-      </label>
-      <input
-        id="email"
-        type="email"
-        autoComplete="username"
-        required
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-[16px] outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-      />
-      <label className="mt-4 block text-sm font-medium text-ink" htmlFor="password">
-        Password
-      </label>
-      <input
-        id="password"
-        type="password"
-        autoComplete="current-password"
-        required
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        className="mt-1 w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-[16px] outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-      />
-      {error ? (
-        <p className="mt-3 text-sm text-danger" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <button
-        type="submit"
-        disabled={busy}
-        className="mt-5 h-11 w-full rounded-lg bg-brand text-sm font-semibold text-white hover:bg-brand-dark disabled:opacity-60"
-      >
-        {busy ? "Signing in…" : "Sign in"}
-      </button>
+      <div className="border-b border-line bg-brand-soft/50 px-6 py-5">
+        <Brand subtitle="Support inbox" className="h-14" />
+      </div>
+      <div className="px-6 pt-5 pb-6">
+        <h1 className="text-lg font-semibold tracking-tight text-ink">Sign in</h1>
+        <p className="mt-0.5 text-sm text-muted">Use your admin account to open the inbox.</p>
+        <label className="mt-5 block text-sm font-semibold text-ink" htmlFor="email">
+          Email
+        </label>
+        <input
+          id="email"
+          type="email"
+          autoComplete="username"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className={field}
+        />
+        <label className="mt-4 block text-sm font-semibold text-ink" htmlFor="password">
+          Password
+        </label>
+        <input
+          id="password"
+          type="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className={field}
+        />
+        {error ? (
+          <p className="mt-4 rounded-xl border border-danger/20 bg-danger-soft px-3 py-2 text-sm text-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <button
+          type="submit"
+          disabled={busy}
+          className="mt-5 h-11 w-full rounded-xl bg-brand text-sm font-semibold text-white transition hover:bg-brand-dark disabled:opacity-60"
+        >
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </div>
     </form>
   );
 }

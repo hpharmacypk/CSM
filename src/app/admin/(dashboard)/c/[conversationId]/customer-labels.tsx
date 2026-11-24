@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useAdminClient } from "../../admin-client-context";
+import { LabelChip } from "../../conversation-list";
 import { LABELS_CHANGED, emitLabelsChanged, fetchLabels, type Label } from "../../admin-data";
 
 /** Assign / remove labels for one customer (admin-only; enforced by RLS). */
@@ -72,28 +73,30 @@ export function CustomerLabels({ customerId }: { customerId: string }) {
   return (
     <div className="relative flex flex-wrap items-center gap-1.5" data-labels-editor>
       {chips.map((l) => (
-        <span key={l.id} className="rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-medium text-brand-dark">
-          {l.name}
-        </span>
+        <LabelChip key={l.id}>{l.name}</LabelChip>
       ))}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="rounded-full border border-dashed border-line px-2.5 py-0.5 text-[11px] font-medium text-muted hover:bg-canvas"
+        aria-haspopup="true"
+        className="inline-flex h-6 items-center gap-1 rounded-md border border-dashed border-line-strong px-2 text-[11px] font-medium text-muted transition hover:border-brand hover:text-brand"
       >
-        {chips.length ? "Edit labels" : "+ Add label"}
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden>
+          {chips.length ? <path d="M4 20h4L19 9l-4-4L4 16z" /> : <path d="M12 5v14M5 12h14" />}
+        </svg>
+        {chips.length ? "Edit labels" : "Add label"}
       </button>
       {error ? <span className="text-[11px] text-danger">{error}</span> : null}
       {open ? (
-        <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-surface p-2 shadow-lg" role="group" aria-label="Labels for this customer">
+        <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-surface p-2 shadow-pop" role="group" aria-label="Labels for this customer">
           {all.length === 0 ? (
             <p className="px-2 py-1.5 text-sm text-muted">No labels yet.</p>
           ) : (
             <ul className="max-h-64 overflow-y-auto">
               {all.map((l) => (
                 <li key={l.id}>
-                  <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-ink hover:bg-canvas">
+                  <label className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-2 text-sm text-ink transition hover:bg-subtle">
                     <input
                       type="checkbox"
                       checked={assigned.has(l.id)}
@@ -107,7 +110,7 @@ export function CustomerLabels({ customerId }: { customerId: string }) {
               ))}
             </ul>
           )}
-          <Link href="/admin/labels" className="mt-1 block rounded-lg px-2 py-1.5 text-xs font-medium text-brand hover:bg-canvas">
+          <Link href="/admin/labels" className="mt-1 block rounded-lg border-t border-line px-2 pt-2 pb-1.5 text-xs font-semibold text-brand hover:bg-subtle">
             Manage labels →
           </Link>
         </div>

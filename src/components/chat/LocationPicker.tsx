@@ -82,21 +82,21 @@ export function LocationPicker({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-4"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-[2px] sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="send-location-title"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[94dvh] w-full max-w-lg flex-col rounded-t-2xl bg-surface p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl sm:rounded-2xl"
+        className="flex max-h-[94dvh] w-full max-w-lg flex-col rounded-t-3xl border border-line bg-surface p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-dialog sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h2 id="send-location-title" className="text-base font-semibold text-ink">
+          <h2 id="send-location-title" className="text-base font-semibold tracking-tight text-ink">
             Send location
           </h2>
-          <button type="button" onClick={onClose} className="rounded-full px-3 py-1 text-sm text-muted hover:bg-canvas">
+          <button type="button" onClick={onClose} className="rounded-full px-3 py-1 text-sm text-muted hover:bg-subtle">
             Cancel
           </button>
         </div>
@@ -107,7 +107,7 @@ export function LocationPicker({
               Share a single point. Your location is not tracked, and nothing is saved until you press Send.
             </p>
             {step.kind === "choose" && step.error ? (
-              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-danger" role="alert">
+              <p className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger" role="alert">
                 {step.error}
               </p>
             ) : null}
@@ -122,7 +122,7 @@ export function LocationPicker({
             <button
               type="button"
               onClick={chooseOnMap}
-              className="flex h-12 items-center justify-center rounded-xl border border-line px-4 text-sm font-semibold text-ink hover:bg-canvas"
+              className="flex h-12 items-center justify-center rounded-xl border border-line px-4 text-sm font-semibold text-ink hover:bg-subtle"
             >
               Choose on map
             </button>
@@ -167,7 +167,7 @@ export function LocationPicker({
                   setAccuracyM(null);
                   setStep({ kind: "choose" });
                 }}
-                className="h-10 rounded-full px-3 text-sm text-muted hover:bg-canvas"
+                className="h-10 rounded-full px-3 text-sm text-muted hover:bg-subtle"
               >
                 Back
               </button>
@@ -175,7 +175,7 @@ export function LocationPicker({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-canvas"
+                  className="h-10 rounded-full border border-line px-4 text-sm font-medium text-muted hover:bg-subtle"
                 >
                   Cancel
                 </button>

@@ -86,7 +86,7 @@ export function ChatImage({ supabase, path, localUrl, width, height }: Props) {
       <button
         type="button"
         onClick={() => src && setOpen(true)}
-        className="block overflow-hidden rounded-xl bg-white"
+        className="block overflow-hidden rounded-xl bg-subtle"
         style={{ aspectRatio: ratio, width: "min(15rem, 60vw)", maxHeight: "20rem" }}
         aria-label="View image full size"
       >

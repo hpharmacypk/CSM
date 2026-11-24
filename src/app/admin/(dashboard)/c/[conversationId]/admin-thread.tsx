@@ -81,45 +81,60 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-line bg-surface px-4 py-3">
-        <div className="flex items-center gap-3">
+      <div className="shrink-0 border-b border-line bg-surface px-2 py-2 sm:px-5 sm:py-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <Link
             href="/admin"
-            className="rounded-full px-2 py-1 text-sm text-brand md:hidden"
+            className="flex h-10 shrink-0 items-center gap-0.5 rounded-full pr-2 pl-1 text-sm font-semibold text-brand transition hover:bg-brand-soft md:hidden"
             aria-label="Back to conversations"
           >
-            ←
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+            <span aria-hidden>Chats</span>
           </Link>
-          {profile ? (
-            <Avatar supabase={supabase} path={profile.avatar_path} label={title} size={40} />
-          ) : null}
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold text-ink">{title}</div>
-            <div className="truncate text-xs text-muted">
-              {profile?.display_name ? <span className="font-mono">{profile.public_ref} · </span> : null}
-              {meta ? <>Started {new Date(meta.created_at).toLocaleString("en")}</> : null}
-            </div>
-          </div>
           {profile ? (
             <button
               type="button"
               onClick={() => setShowProfile(true)}
-              className="rounded-full border border-line px-3 py-1 text-xs font-medium text-ink hover:bg-canvas"
+              className="flex min-w-0 flex-1 items-center gap-3 rounded-xl p-1 pr-2 text-left transition hover:bg-subtle"
+              aria-label={`View profile of ${title}`}
+            >
+              <Avatar supabase={supabase} path={profile.avatar_path} label={title} size={40} />
+              <span className="min-w-0">
+                <span className="block truncate text-[15px] font-semibold tracking-tight text-ink">{title}</span>
+                <span className="block truncate text-xs text-muted">
+                  {profile.display_name ? <span className="font-mono">{profile.public_ref} · </span> : null}
+                  {meta ? <>Started {new Date(meta.created_at).toLocaleDateString("en", { day: "numeric", month: "short", year: "numeric" })}</> : null}
+                </span>
+              </span>
+            </button>
+          ) : (
+            <div className="min-w-0 flex-1 px-1">
+              <span className="block h-4 w-32 animate-pulse rounded bg-subtle" />
+            </div>
+          )}
+          <ConnectionBadge state={chat.connection} compact />
+          {profile ? (
+            <button
+              type="button"
+              onClick={() => setShowProfile(true)}
+              className="hidden h-9 shrink-0 items-center rounded-full border border-line px-3.5 text-xs font-semibold text-ink transition hover:border-line-strong hover:bg-subtle sm:flex"
             >
               Profile
             </button>
           ) : null}
-          <ConnectionBadge state={chat.connection} />
         </div>
         {customerId ? (
-          <div className="mt-2 pl-0 md:pl-[52px]">
+          <div className="mt-1.5 px-1 md:pl-[56px]">
             <CustomerLabels customerId={customerId} />
           </div>
         ) : null}
       </div>
 
       {chat.loading ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-muted">
+        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted">
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-brand/25 border-t-brand" aria-hidden />
           Loading messages…
         </div>
       ) : (
@@ -146,7 +161,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
       )}
 
       {chat.loadError ? (
-        <div className="bg-red-50 px-4 py-2 text-center text-xs text-danger">
+        <div className="shrink-0 border-t border-danger/15 bg-danger-soft px-4 py-2 text-center text-xs text-danger" role="alert">
           Couldn&apos;t refresh messages.{" "}
           <button type="button" className="underline" onClick={() => void chat.reload()}>
             Retry
@@ -165,27 +180,27 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
 
       {showProfile && profile ? (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-4"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-[2px] sm:items-center sm:p-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="customer-profile-title"
           onClick={() => setShowProfile(false)}
         >
           <div
-            className="w-full max-w-sm rounded-t-2xl bg-surface p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-xl sm:rounded-2xl"
+            className="w-full max-w-sm rounded-t-3xl border border-line bg-surface p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-dialog sm:rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-4">
               <Avatar supabase={supabase} path={profile.avatar_path} label={title} size={64} />
               <div className="min-w-0">
-                <h2 id="customer-profile-title" className="truncate text-lg font-semibold text-ink">
+                <h2 id="customer-profile-title" className="truncate text-lg font-semibold tracking-tight text-ink">
                   {profile.display_name ?? "No name set"}
                 </h2>
                 <div className="font-mono text-xs text-muted">{profile.public_ref}</div>
               </div>
             </div>
-            <h3 className="mt-4 text-xs font-semibold uppercase tracking-wide text-muted">Bio</h3>
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink">
+            <h3 className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-muted">Bio</h3>
+            <p className="mt-1.5 whitespace-pre-wrap break-words rounded-xl border border-line bg-canvas px-3.5 py-3 text-sm leading-relaxed text-ink">
               {profile.bio ?? <span className="text-muted">No bio provided.</span>}
             </p>
             <p className="mt-4 text-xs text-muted">
@@ -196,7 +211,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
               <button
                 type="button"
                 onClick={() => setShowProfile(false)}
-                className="h-9 rounded-full border border-line px-4 text-sm font-medium text-ink hover:bg-canvas"
+                className="h-10 rounded-full border border-line px-5 text-sm font-semibold text-ink transition hover:border-line-strong hover:bg-subtle"
               >
                 Close
               </button>

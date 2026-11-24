@@ -1,30 +1,46 @@
 @import "tailwindcss";
 
-/* H-Pharmacy text branding. Swap these when the official logo/colours arrive. */
+/* H-Pharmacy theme. Text branding (no official logo in the repo yet). */
 :root {
-  --canvas: #f4f7f6;
-  --surface: #ffffff;
-  --ink: #12211d;
-  --muted: #5d6f6a;
-  --line: #dde5e2;
-  --brand: #0f7a5f;
-  --brand-dark: #0b5f4a;
-  --brand-soft: #e3f3ed;
-  --danger: #c0392b;
+  --canvas: #f5f3ee; /* warm off-white page / thread background */
+  --surface: #fffefb; /* warm white panels, bubbles, cards */
+  --subtle: #efece5; /* hover / pressed fills on surface */
+  --ink: #14231e;
+  --muted: #5a6963; /* 5.4:1 on --surface */
+  --line: #e4dfd4;
+  --line-strong: #cfc8b9;
+  --brand: #0c6b4f; /* deep green, 6.5:1 with white text */
+  --brand-dark: #08523c;
+  --brand-soft: #e4f0ea;
+  --brand-ink: #074634; /* green text on --brand-soft */
+  --pin: #9a6a12; /* amber for pins, 4.9:1 on --pin-soft */
+  --pin-soft: #fbf2df;
+  --danger: #b42318;
+  --danger-soft: #fdecea;
 }
 
 @theme inline {
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
   --color-ink: var(--ink);
   --color-muted: var(--muted);
   --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
   --color-brand: var(--brand);
   --color-brand-dark: var(--brand-dark);
   --color-brand-soft: var(--brand-soft);
+  --color-brand-ink: var(--brand-ink);
+  --color-pin: var(--pin);
+  --color-pin-soft: var(--pin-soft);
   --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     sans-serif;
+  /* Light, layered shadows only. */
+  --shadow-bubble: 0 1px 1px rgb(20 35 30 / 0.05);
+  --shadow-pop: 0 1px 2px rgb(20 35 30 / 0.06), 0 8px 24px -6px rgb(20 35 30 / 0.16);
+  --shadow-dialog: 0 2px 6px rgb(20 35 30 / 0.06), 0 24px 48px -12px rgb(20 35 30 / 0.28);
 }
 
 html,
@@ -37,4 +53,38 @@ body {
   color: var(--ink);
   font-family: var(--font-sans);
   -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  text-rendering: optimizeLegibility;
+}
+
+/* Clear, consistent keyboard focus for every control. */
+:where(a, button, summary, [role="button"], input[type="checkbox"], input[type="range"]):focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}
+
+/* Keep an empty auto-growing field to one line on narrow phones. */
+textarea:placeholder-shown {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Thin, quiet scrollbars in lists and threads. */
+.hp-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* Hide the scrollbar on horizontal chip rows (still scrollable). */
+.hp-no-scrollbar {
+  scrollbar-width: none;
+}
+.hp-no-scrollbar::-webkit-scrollbar {
+  display: none;
 }

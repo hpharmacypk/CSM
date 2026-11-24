@@ -130,30 +130,27 @@ export function GuestInbox() {
   }, [start]);
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="border-b border-line bg-surface px-4 py-3 sm:px-6">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-          <Brand subtitle="Customer support" />
-          {boot.kind === "ready" ? <GuestProfileButton supabase={boot.supabase} /> : null}
-        </div>
-      </header>
+    <GuestFrame headerAction={boot.kind === "ready" ? <GuestProfileButton supabase={boot.supabase} /> : null}>
 
-      {boot.kind === "starting" ? (
-        <CenteredNote>Opening your inbox…</CenteredNote>
-      ) : boot.kind === "error" ? (
-        <CenteredNote>
-          <p className="mb-3 text-ink">{boot.message}</p>
-          <button
-            type="button"
-            onClick={() => {
-              setBoot({ kind: "starting" });
-              void start();
-            }}
-            className="rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white"
-          >
-            Try again
-          </button>
-        </CenteredNote>
+        {boot.kind === "starting" ? (
+          <CenteredNote>
+            <Spinner />
+            Opening your inbox…
+          </CenteredNote>
+        ) : boot.kind === "error" ? (
+          <CenteredNote>
+            <p className="mb-4 max-w-xs text-ink">{boot.message}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setBoot({ kind: "starting" });
+                void start();
+              }}
+              className="h-10 rounded-full bg-brand px-5 text-sm font-semibold text-white transition hover:bg-brand-dark"
+            >
+              Try again
+            </button>
+          </CenteredNote>
       ) : (
         <GuestChat
           key={boot.conversationId}
@@ -161,6 +158,21 @@ export function GuestInbox() {
           conversationId={boot.conversationId}
         />
       )}
+    </GuestFrame>
+  );
+}
+
+/** Centered chat column with the compact branded header. */
+function GuestFrame({ headerAction, children }: { headerAction?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="h-full bg-subtle">
+      <div className="mx-auto flex h-full w-full max-w-3xl flex-col bg-canvas md:border-x md:border-line">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-3 sm:h-16 sm:px-5">
+          <Brand subtitle="Customer support" className="h-11 sm:h-12" subtitleOnMobile={false} />
+          {headerAction}
+        </header>
+        {children}
+      </div>
     </div>
   );
 }
@@ -177,18 +189,24 @@ function GuestChat({
 
   return (
     <main className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-line bg-brand-soft px-4 py-2 sm:px-6">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-          <p className="text-xs text-brand-dark">
-            Your messages are private to you and the H-Pharmacy team. This chat stays available in
-            this browser.
-          </p>
-          <ConnectionBadge state={chat.connection} />
-        </div>
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-brand-soft/60 px-3 py-1.5 sm:px-5">
+        <p className="flex min-w-0 items-center gap-1.5 text-xs text-brand-ink">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden>
+            <rect x="5" y="11" width="14" height="10" rx="2" />
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+          </svg>
+          <span>
+            Private to you and the H-Pharmacy team<span className="hidden sm:inline">. This chat stays available in this browser</span>.
+          </span>
+        </p>
+        <ConnectionBadge state={chat.connection} />
       </div>
 
       {chat.loading ? (
-        <CenteredNote>Loading messages…</CenteredNote>
+        <CenteredNote>
+          <Spinner />
+          Loading messages…
+        </CenteredNote>
       ) : (
         <ChatThread
           supabase={supabase}
@@ -209,21 +227,28 @@ function GuestChat({
           onUnpin={chat.unpinMessage}
           onEnsureLoaded={chat.ensureLoaded}
           emptyState={
-            <div className="max-w-sm text-center">
-              <p className="text-base font-semibold text-ink">How can we help?</p>
-              <p className="mt-1 text-sm text-muted">
+            <div className="flex max-w-sm flex-col items-center px-4 text-center">
+              <span aria-hidden className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-surface text-brand shadow-bubble">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.1A8 8 0 1 1 20 12z" />
+                  <path d="M9 12h6M12 9v6" />
+                </svg>
+              </span>
+              <p className="text-lg font-semibold tracking-tight text-ink">How can we help?</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-muted">
                 Send us a message about your order, a product, or a prescription question. Our
                 team will reply here.
               </p>
+              <p className="mt-4 text-xs text-muted">You can send text, photos, voice notes and your location.</p>
             </div>
           }
         />
       )}
 
       {chat.loadError ? (
-        <div className="bg-red-50 px-4 py-2 text-center text-xs text-danger">
+        <div className="shrink-0 border-t border-danger/15 bg-danger-soft px-4 py-2 text-center text-xs text-danger" role="alert">
           Couldn&apos;t refresh messages.{" "}
-          <button type="button" className="underline" onClick={() => void chat.reload()}>
+          <button type="button" className="font-semibold underline" onClick={() => void chat.reload()}>
             Retry
           </button>
         </div>
@@ -243,7 +268,11 @@ function GuestChat({
 function CenteredNote({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted">
-      <div>{children}</div>
+      <div className="flex flex-col items-center gap-3">{children}</div>
     </div>
   );
+}
+
+function Spinner() {
+  return <span className="h-6 w-6 animate-spin rounded-full border-2 border-brand/25 border-t-brand" aria-hidden />;
 }
