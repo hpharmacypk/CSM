@@ -807,6 +807,143 @@ listed but cannot be chosen.
 4. Delete the original for everyone: the forwarded copy still opens.
 5. Try to forward to a blocked chat: it cannot be selected.
 
+## Update: order-agent bridge (Phase 3 of the order-agent integration)
+
+The Inbox can now hand customer turns to the H-Pharmacy order agent through n8n
+(workflow "H-Pharmacy Customer Inbox Workflow", contracts `inbox-agent-event-v1` and
+`inbox-agent-reply-v1`) and show the agent's replies, buttons, lists and delivery form.
+**It is off by default** and normal staff chat works the same with it on or off.
+
+### Migration (apply after `20261124000200_block_and_forward.sql`)
+
+| Order | File |
+| --- | --- |
+| 13 | `supabase/migrations/20261124000300_agent_bridge.sql` |
+
+Apply it like the earlier ones (SQL editor, whole file, Run).
+
+### What gets sent to the agent
+
+Each event is written to a private outbox (`private.agent_events`) **in the same database
+transaction** as the message it describes, by a trigger on `public.messages`.
+
+| Saved in the Inbox | Event |
+| --- | --- |
+| Customer text, 1–1000 characters | `customer.message` |
+| Customer clicks an option the assistant offered | `customer.action` (the option id, never its title) |
+| Customer submits the assistant's delivery form | `customer.delivery_form` |
+| Any message from a human admin (text, photo, voice, location, forward) | `admin.message` (`admin_author: "human"`, saved `occurred_at` in UTC) |
+
+Photos, voice notes, locations and customer text over 1000 characters stay in staff chat
+only. Assistant messages never create an event. `conversation_id`, `customer_id`,
+`message_id` and `occurred_at` come from the database records, never from the browser.
+The saved message UUID is the agent's replay key (`client_message_id`).
+
+### How events are sent (Hostinger-safe)
+
+Nothing depends on background work inside the Node process surviving.
+
+1. **Scheduled endpoint (the reliable path):** `POST /api/agent/dispatch` with
+   `Authorization: Bearer <AGENT_DISPATCH_SECRET>`. It sends every due event, retries
+   failed ones with backoff (10 s, 30 s, 1 min, 2 min, 5 min, 10 min, 15 min; 8 attempts),
+   and returns counts only. Call it **every minute**, for example from an hPanel cron job:
+
+   ```
+   curl -fsS -X POST -H "Authorization: Bearer <AGENT_DISPATCH_SECRET>" https://chat.hpharmacy.pk/api/agent/dispatch
+   ```
+
+   (Alternative: Supabase `pg_cron` + `pg_net` calling the same URL.)
+2. **Fast path:** after the browser saves a message it sends an empty
+   `POST /api/agent/nudge`. The server then looks for due events in the database. The
+   request carries no data and cannot choose what is sent; if it is lost, step 1 sends the
+   event within a minute.
+
+Per chat, a customer turn waits until the previous turn is answered (or 90 seconds pass
+without a callback). Staff messages (`admin.message`) are never held back, so a takeover
+reaches the agent at once. A customer turn that could not be sent for 30 minutes expires.
+Events of blocked chats and messages deleted before sending are cancelled. Each event is
+claimed by one worker at a time (lease + attempt number), so several processes are safe.
+
+### Callback
+
+`POST /api/agent/callback`, header `Authorization: Bearer <AGENT_CALLBACK_SECRET>`.
+The server validates the payload and then the database checks that `event_id`,
+`conversation_id`, `customer_id`, `in_reply_to_message_id` and `event_type` match the stored
+event, all in one transaction under the chat's lock.
+
+- `agent.reply` with `delivery.status = "deliver"`: the text is saved once (its
+  `client_message_id` is the `event_id`; duplicates and replays return `duplicate`).
+- Not shown (still `200`, handoff still applied): `suppressed`, `no_reply`, chat blocked,
+  a reply to an older turn that arrives after a newer reply, and **a newer human staff
+  message in the chat** (`held_staff_reply`). The workflow's emergency-notice exception
+  is kept: a reply the agent allowed while staff were active (`turn_state: human_active`,
+  or `response_type: emergency_safety_response`) is always shown.
+- `handoff.update` (after a staff reply) and the `handoff` part of every reply update
+  `conversations.agent_handoff_state`, unless a later event already set it.
+- Responses: `200` processed, `401` bad credential, `400`/`422` bad JSON or payload,
+  `404` unknown event (for example the customer was deleted), `409` ids do not match,
+  `503` bridge off, `500` try again.
+
+### What customers and staff see
+
+- Agent replies appear as **H-Pharmacy Assistant**, in a light green bubble on both
+  sides. They are admin-side messages (`author = 'assistant'`), so unread counts, Realtime
+  and access rules are unchanged. Staff cannot "delete for everyone" an assistant reply.
+- Buttons (up to 3) and lists (up to 10, behind "View products"/"View options") are drawn
+  from the reply's structured `actions`. Only the newest offer is usable, once; a newer
+  assistant or staff message makes it stale. Double clicks and second tabs are refused by
+  a unique index. **Continue shopping** only puts the cursor in the message box.
+- The **delivery form** (Name, Home Address, Email Address (optional), Phone Number, City)
+  shows the agent's per-field errors and "already received" marks. The chat shows only
+  "Delivery details submitted". The values go to `private.agent_form_submissions` (never
+  readable by browsers) and are cleared once the event is finished. Validation of the
+  details and every order decision stay with the agent.
+- Admin: **Needs staff** chip in the list and thread header when the agent reports
+  `handoff_requested`; **Assistant paused** in the header while it reports `human_active`.
+  Replying as staff is what pauses the agent; the agent decides when it resumes.
+
+### Environment variables (server only; never `NEXT_PUBLIC_`, never in Git)
+
+| Name | Value |
+| --- | --- |
+| `AGENT_BRIDGE_ENABLED` | `true` to turn the server side on (anything else = off) |
+| `SUPABASE_SECRET_KEY` | Supabase **secret** key (Project Settings → API Keys). The bridge's database functions are granted to it only |
+| `N8N_INBOX_WEBHOOK_URL` | `https://<n8n>/webhook/h-pharmacy-inbox-agent-events` |
+| `N8N_INBOX_WEBHOOK_HEADER_NAME` | Header name of the n8n "Inbox Webhook Auth" credential |
+| `N8N_INBOX_WEBHOOK_HEADER_VALUE` | Header value of that credential |
+| `AGENT_CALLBACK_SECRET` | Random secret (32+ characters); n8n sends `Authorization: Bearer <it>` |
+| `AGENT_DISPATCH_SECRET` | Random secret for the scheduled caller |
+
+The bridge stays off unless all of them (except the dispatch secret) are set.
+
+### Turning it on (after the migration, n8n wiring and env vars)
+
+```sql
+update private.agent_bridge_settings set enabled = true;   -- off: set enabled = false
+```
+
+With the database switch off nothing is captured and callbacks are refused; with
+`AGENT_BRIDGE_ENABLED` off the routes do nothing. Chat works either way.
+
+### n8n wiring checklist (later; nothing was imported or activated)
+
+- [ ] Import the workflow JSON; keep it **inactive** until the checks below pass.
+- [ ] **Inbox Webhook** → create a Header Auth credential (name + value); put the same
+      values in `N8N_INBOX_WEBHOOK_HEADER_NAME` / `N8N_INBOX_WEBHOOK_HEADER_VALUE`.
+- [ ] **H Pharmacy Inbox Agent**, **Check Human Pause**, **Record Staff Reply** → bind the
+      agent's `ANSWER_API_TOKEN` Header Auth credential.
+- [ ] **Send Inbox Callback** → replace the `.invalid` URL with
+      `https://chat.hpharmacy.pk/api/agent/callback`; bind a Header Auth credential with
+      name `Authorization` and value `Bearer <AGENT_CALLBACK_SECRET>`.
+- [ ] Leave the COS branch disabled (guard node + disabled nodes) until the COS `source`
+      value for web orders is verified.
+- [ ] Set the env vars on Hostinger, add the every-minute dispatch caller, apply the
+      migration, then enable: n8n workflow active → `AGENT_BRIDGE_ENABLED=true` →
+      `update private.agent_bridge_settings set enabled = true`.
+- [ ] Test with a synthetic chat: text, product list, add, proceed, delivery form with a
+      wrong phone, corrected form, confirm; a staff reply ("Assistant paused"); "talk to a
+      pharmacist" ("Needs staff"); block and delete a test customer during a reply.
+
 ## Public launch checklist (Phase 4, not done yet)
 
 - [ ] **CAPTCHA for anonymous sign-ins.** Enable Cloudflare Turnstile under

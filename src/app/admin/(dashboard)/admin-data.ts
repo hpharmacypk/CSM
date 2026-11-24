@@ -13,7 +13,8 @@ export type AdminConversationRow = {
   avatar_path: string | null;
   created_at: string;
   last_message_at: string | null;
-  last_message_sender: "customer" | "admin" | null;
+  /** "assistant" when the newest message is an order-agent reply. */
+  last_message_sender: "customer" | "admin" | "assistant" | null;
   last_message_preview: string | null;
   admin_unread_count: number;
   labels: Label[];
@@ -23,6 +24,8 @@ export type AdminConversationRow = {
   archived_at: string | null;
   /** Set while the admin has blocked this customer (no new messages either way). */
   blocked_at?: string | null;
+  /** Order-agent handoff state ("handoff_requested" = Needs staff). */
+  agent_handoff_state?: string | null;
 };
 
 /** detail: { conversationId, blocked } — the admin blocked/unblocked a customer. */

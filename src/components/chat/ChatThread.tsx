@@ -11,7 +11,8 @@ import {
 } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DisplayMessage } from "@/lib/chat/use-conversation-messages";
-import type { Message, SenderRole } from "@/lib/types";
+import type { AgentChoice, DeliveryFormValues, Message, SenderRole } from "@/lib/types";
+import { AgentOffer, ASSISTANT_NAME, AssistantGlyph } from "./AgentActions";
 import { formatDay, formatTime } from "./format";
 import { ChatImage } from "./ChatImage";
 import { isEmojiOnly } from "./EmojiPicker";
@@ -40,9 +41,20 @@ type Props = {
   onEnsureLoaded: (messageId: string) => Promise<boolean>;
   /** Admin only: offer "Forward…" in the message menu. */
   onForward?: (message: DisplayMessage) => void;
+  /** Assistant message whose options are current (both views; shown read-only to the admin). */
+  currentOfferId?: string | null;
+  /** Customer only: answer the assistant's options / delivery form. */
+  agentHandlers?: {
+    onChoose: (offerId: string, choice: AgentChoice) => Promise<string | null>;
+    onSubmitForm: (offerId: string, values: DeliveryFormValues) => Promise<string | null>;
+    onContinueShopping: () => void;
+  };
   emptyState: ReactNode;
   otherPartyLabel: string;
 };
+
+/** Who wrote a message, for labels and grouping (assistant vs staff on the same side). */
+const speaker = (m: DisplayMessage) => `${m.senderRole}:${m.author}`;
 
 const NEAR_BOTTOM_PX = 80;
 
@@ -64,6 +76,8 @@ export function ChatThread({
   onUnpin,
   onEnsureLoaded,
   onForward,
+  currentOfferId = null,
+  agentHandlers,
   emptyState,
   otherPartyLabel,
 }: Props) {
@@ -308,9 +322,12 @@ export function ChatThread({
               const mine = m.senderRole === viewerRole;
               const day = formatDay(m.createdAt);
               const showDay = i === 0 || formatDay(messages[i - 1].createdAt) !== day;
-              const grouped = i > 0 && !showDay && messages[i - 1].senderRole === m.senderRole;
+              const grouped = i > 0 && !showDay && speaker(messages[i - 1]) === speaker(m);
               const canMenu = m.status === "sent" && m.id !== null;
               const menuOpen = canMenu && menuFor === m.id;
+              const assistant = m.author === "assistant";
+              const isCurrentOffer = assistant && m.id !== null && m.id === currentOfferId;
+              const offerId = m.id;
               return (
                 <Fragment key={m.key}>
                   {showDay ? (
@@ -331,9 +348,19 @@ export function ChatThread({
                     <div
                       className={`flex max-w-[86%] flex-col sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}
                     >
-                      {!mine && !grouped ? (
+                      {assistant && !grouped ? (
+                        <span className="mb-1 flex items-center gap-1 px-1 text-xs font-semibold text-brand-ink" data-testid="assistant-label">
+                          <AssistantGlyph />
+                          {ASSISTANT_NAME}
+                        </span>
+                      ) : !mine && !grouped ? (
                         <span className="mb-1 px-1 text-xs font-semibold text-brand-ink">
                           {otherPartyLabel}
+                        </span>
+                      ) : null}
+                      {m.agentActionId && !m.deleted ? (
+                        <span className="mb-0.5 px-1 text-[11px] font-medium text-muted" data-testid="agent-input-label">
+                          {m.agentActionId === "hp1:delivery" ? "Delivery form" : "Selected option"}
                         </span>
                       ) : null}
                       {m.forwarded && !m.deleted ? (
@@ -353,7 +380,9 @@ export function ChatThread({
                             className={`whitespace-pre-wrap break-words text-[15px] leading-[1.4] shadow-bubble ${
                               m.type === "image"
                                 ? "rounded-2xl border border-line bg-surface p-1"
-                                : mine
+                                : assistant
+                                  ? `rounded-[18px] border border-brand/20 bg-brand-soft text-ink ${grouped ? "" : mine ? "rounded-tr-md" : "rounded-tl-md"}`
+                                  : mine
                                   ? `rounded-[18px] bg-brand text-white ${grouped ? "" : "rounded-tr-md"}`
                                   : `rounded-[18px] border border-line bg-surface text-ink ${grouped ? "" : "rounded-tl-md"}`
                             } ${m.status === "failed" ? "opacity-70" : ""} ${
@@ -465,7 +494,7 @@ export function ChatThread({
                                 >
                                   Delete for me
                                 </button>
-                                {mine && !m.deleted ? (
+                                {mine && !assistant && !m.deleted ? (
                                   <button
                                     type="button"
                                     role="menuitem"
@@ -484,6 +513,21 @@ export function ChatThread({
                           </div>
                         ) : null}
                       </div>
+                      {assistant && m.agentActions && !m.deleted && offerId ? (
+                        <AgentOffer
+                          actions={m.agentActions}
+                          usable={isCurrentOffer}
+                          handlers={
+                            agentHandlers && isCurrentOffer
+                              ? {
+                                  onChoose: (c) => agentHandlers.onChoose(offerId, c),
+                                  onSubmitForm: (v) => agentHandlers.onSubmitForm(offerId, v),
+                                  onContinueShopping: agentHandlers.onContinueShopping,
+                                }
+                              : undefined
+                          }
+                        />
+                      ) : null}
                       <div className={`mt-1 flex flex-wrap items-center gap-x-2 px-1 text-[11px] leading-4 text-muted ${mine ? "justify-end" : ""}`}>
                         {m.status === "sending" ? (
                           <span>{m.type === "text" ? "Sending…" : "Uploading…"}</span>

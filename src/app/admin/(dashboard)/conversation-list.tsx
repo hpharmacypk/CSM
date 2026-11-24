@@ -8,6 +8,7 @@ import { formatListTime } from "@/components/chat/format";
 import { CHAT_EVENTS } from "@/lib/chat/use-conversation-messages";
 import { PinIcon } from "@/components/chat/ChatThread";
 import { useAdminClient } from "./admin-client-context";
+import { HandoffBadge } from "./handoff-badge";
 import {
   ARCHIVE_CHANGED,
   LABELS_CHANGED,
@@ -576,6 +577,7 @@ function ConversationRow({
             <div className="flex items-center justify-between gap-2">
               <span className={`truncate text-[13px] ${unread ? "font-medium text-ink" : "text-muted"}`}>
                 {c.last_message_sender === "admin" ? <span className="font-normal text-muted">You: </span> : null}
+                {c.last_message_sender === "assistant" ? <span className="font-normal text-muted">Assistant: </span> : null}
                 {c.last_message_preview ?? <span className="italic">No messages yet</span>}
               </span>
               {unread > 0 ? (
@@ -588,8 +590,9 @@ function ConversationRow({
                 </span>
               ) : null}
             </div>
-            {c.labels.length || blocked ? (
+            {c.labels.length || blocked || c.agent_handoff_state === "handoff_requested" ? (
               <div className="mt-1 flex flex-wrap gap-1">
+                <HandoffBadge state={c.agent_handoff_state ?? null} compact />
                 {blocked ? (
                   <span className="inline-flex items-center gap-1 rounded-md border border-danger/25 bg-danger-soft px-1.5 py-px text-[11px] font-semibold text-danger" data-testid="blocked-chip">
                     Blocked

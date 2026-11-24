@@ -381,6 +381,13 @@ function GuestChat({
           onPin={chat.pinMessage}
           onUnpin={chat.unpinMessage}
           onEnsureLoaded={chat.ensureLoaded}
+          currentOfferId={chat.blocked ? null : chat.currentOfferId}
+          agentHandlers={{
+            onChoose: chat.submitAgentAction,
+            onSubmitForm: chat.submitDeliveryForm,
+            // "Continue shopping": back to the message box, nothing is sent.
+            onContinueShopping: () => document.getElementById("composer")?.focus(),
+          }}
           emptyState={
             <div className="flex max-w-sm flex-col items-center px-4 text-center">
               <span aria-hidden className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-surface text-brand shadow-bubble">

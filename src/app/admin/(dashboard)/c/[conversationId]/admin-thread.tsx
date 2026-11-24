@@ -10,6 +10,7 @@ import { useConversationMessages, type DisplayMessage } from "@/lib/chat/use-con
 import { useAdminClient } from "../../admin-client-context";
 import { ARCHIVE_CHANGED, BLOCK_CHANGED, emitArchiveChanged, emitBlockChanged } from "../../admin-data";
 import { ArchiveIcon, BlockGlyph } from "../../conversation-list";
+import { HandoffBadge } from "../../handoff-badge";
 import { ForwardDialog } from "./forward-dialog";
 import { CustomerLabels } from "./customer-labels";
 
@@ -179,6 +180,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
             </div>
           )}
           <ConnectionBadge state={chat.connection} compact />
+          <HandoffBadge state={chat.handoffState} />
           {chat.blocked ? (
             <span className="flex h-7 shrink-0 items-center gap-1 rounded-full border border-danger/25 bg-danger-soft px-2.5 text-xs font-semibold text-danger" data-testid="blocked-badge">
               <BlockGlyph size={12} />
@@ -245,6 +247,7 @@ function AdminThreadInner({ conversationId }: { conversationId: string }) {
             setNotice(null);
             setForwarding(m);
           }}
+          currentOfferId={chat.currentOfferId}
           emptyState={<p className="text-sm text-muted">No messages in this conversation yet.</p>}
         />
       )}

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Message, SenderRole } from "@/lib/types";
+import type { AgentActions, AgentChoice, DeliveryFormValues, Message, SenderRole } from "@/lib/types";
+import { nudgeAgentBridge } from "@/lib/agent/nudge";
 import { IMAGE_MAX_UPLOAD_BYTES, type PreparedImage } from "./image";
 import {
   MEDIA_BUCKET,
@@ -47,6 +48,13 @@ export type DisplayMessage = {
   failReason: string | null;
   /** Sent by the admin as a forward from another chat. */
   forwarded: boolean;
+  /** "assistant": an order-agent reply (senderRole is "admin"). */
+  author: "human" | "assistant";
+  /** Assistant replies: the buttons / list / delivery form offered with it. */
+  agentActions: AgentActions | null;
+  /** Customer option clicks / delivery forms: which offer they answered. */
+  agentOfferMessageId: string | null;
+  agentActionId: string | null;
 };
 
 type PendingMessage = {
@@ -109,6 +117,17 @@ function failText(error: unknown, fallback: string): string {
   return /blocked/i.test(errorText(error)) ? "Messages are blocked in this chat." : fallback;
 }
 
+/** Readable text for a refused option click or delivery form. */
+function agentInputError(error: unknown): string {
+  const text = errorText(error);
+  if (/blocked/i.test(text)) return "Messages are blocked in this chat.";
+  if (/no longer available/i.test(text)) return "This option is no longer available. Please use the latest message.";
+  if (/required field/i.test(text)) return "Please fill in every required field.";
+  if (/too long/i.test(text)) return "Some details are too long. Please shorten them.";
+  if (/not available right now/i.test(text)) return "The assistant isn't available right now. You can still message our team.";
+  return "Couldn't send. Check your connection and try again.";
+}
+
 function errorText(error: unknown): string {
   if (error && typeof error === "object" && "message" in error) {
     return String((error as { message: unknown }).message);
@@ -148,6 +167,8 @@ export function useConversationMessages(
   const goneRef = useRef(false);
   /** The admin blocked this conversation: nobody can send until unblocked. */
   const [blocked, setBlocked] = useState(false);
+  /** Order-agent handoff state reported by the workflow (e.g. "handoff_requested"). */
+  const [handoffState, setHandoffState] = useState<string | null>(null);
 
   const latestSeqRef = useRef(0);
   const oldestSeqRef = useRef(0);
@@ -444,6 +465,7 @@ export function useConversationMessages(
           return false;
         }
         addConfirmed([data as Message]);
+        nudgeAgentBridge();
         return true;
       }
       if (item.kind === "text") {
@@ -457,6 +479,7 @@ export function useConversationMessages(
           return false;
         }
         addConfirmed([data as Message]);
+        nudgeAgentBridge();
         return true;
       }
 
@@ -502,6 +525,7 @@ export function useConversationMessages(
         return false;
       }
       addConfirmed([data as Message]);
+      nudgeAgentBridge();
       return true;
     },
     [supabase, conversationId, addConfirmed, markFailed],
@@ -593,6 +617,80 @@ export function useConversationMessages(
     [pending, deliver],
   );
 
+  // ------------------------------------------------------- assistant offers
+  /**
+   * The assistant message whose buttons / list / form the customer may use:
+   * the newest assistant reply with actions, not followed by any newer reply
+   * from H-Pharmacy (assistant or staff) and not answered yet. The database
+   * applies the same rule when the click or form arrives.
+   */
+  const currentOfferId = useMemo(() => {
+    for (let i = confirmed.length - 1; i >= 0; i--) {
+      const m = confirmed[i];
+      if (m.sender_role !== "admin") continue;
+      if (m.author !== "assistant" || !m.agent_actions || m.deleted_at) return null;
+      return confirmed.some((x) => x.agent_offer_message_id === m.id) ? null : m.id;
+    }
+    return null;
+  }, [confirmed]);
+
+  /** One stable client id per offer: retries and double clicks reuse it. */
+  const offerClientIds = useRef(new Map<string, string>());
+  const offerInFlight = useRef(new Set<string>());
+
+  const submitAgentInput = useCallback(
+    async (offerId: string, rpc: string, args: Record<string, unknown>): Promise<string | null> => {
+      if (offerInFlight.current.has(offerId)) return null; // already being sent
+      offerInFlight.current.add(offerId);
+      let clientId = offerClientIds.current.get(offerId);
+      if (!clientId) {
+        clientId = crypto.randomUUID();
+        offerClientIds.current.set(offerId, clientId);
+      }
+      try {
+        const { data, error } = await supabase.rpc(rpc, {
+          p_offer_message_id: offerId,
+          p_client_message_id: clientId,
+          ...args,
+        });
+        if (error || !data) {
+          // A different choice / corrected form after a refusal gets a new id.
+          offerClientIds.current.delete(offerId);
+          void refreshBlockedRef.current();
+          return agentInputError(error);
+        }
+        addConfirmed([data as Message]);
+        nudgeAgentBridge();
+        return null;
+      } finally {
+        offerInFlight.current.delete(offerId);
+      }
+    },
+    [supabase, addConfirmed],
+  );
+
+  /** Customer clicked one option the assistant offered (never "Continue shopping"). */
+  const submitAgentAction = useCallback(
+    (offerId: string, choice: AgentChoice) =>
+      submitAgentInput(offerId, "submit_agent_action", { p_action_id: choice.id }),
+    [submitAgentInput],
+  );
+
+  /** Customer submitted the assistant's delivery form. Values are never kept here. */
+  const submitDeliveryForm = useCallback(
+    (offerId: string, values: DeliveryFormValues) => {
+      const form: Record<string, string> = {
+        full_name: values.full_name.trim(),
+        shipping_address: values.shipping_address.trim(),
+        phone_number: values.phone_number.trim(),
+        city: values.city.trim(),
+      };
+      if (values.email_address.trim()) form.email_address = values.email_address.trim();
+      return submitAgentInput(offerId, "submit_agent_delivery_form", { p_form: form });
+    },
+    [submitAgentInput],
+  );
+
   // ---------------------------------------------------------------- pinning
   // Load the pin and keep it live (the conversations row is RLS-filtered per viewer).
   useEffect(() => {
@@ -612,9 +710,14 @@ export function useConversationMessages(
         { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${conversationId}` },
         (payload) => {
           if (!active) return;
-          const row = payload.new as { pinned_message_id?: string | null; blocked_at?: string | null };
+          const row = payload.new as {
+            pinned_message_id?: string | null;
+            blocked_at?: string | null;
+            agent_handoff_state?: string | null;
+          };
           setPinnedId(row.pinned_message_id ?? null);
           if (row.blocked_at !== undefined) setBlocked(row.blocked_at !== null);
+          if (row.agent_handoff_state !== undefined) setHandoffState(row.agent_handoff_state);
         },
       )
       .subscribe();
@@ -633,6 +736,15 @@ export function useConversationMessages(
       .eq("id", conversationId)
       .maybeSingle();
     if (!error && data) setBlocked((data as { blocked_at: string | null }).blocked_at !== null);
+    // Order-agent handoff status (admin UI); ignored where the column doesn't exist yet.
+    const handoff = await supabase
+      .from("conversations")
+      .select("agent_handoff_state")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (!handoff.error && handoff.data) {
+      setHandoffState((handoff.data as { agent_handoff_state: string | null }).agent_handoff_state);
+    }
   }, [supabase, conversationId]);
   const refreshBlockedRef = useRef(refreshBlocked);
   useEffect(() => {
@@ -812,6 +924,10 @@ export function useConversationMessages(
         localUrl: null,
         failReason: null,
         forwarded: m.forwarded === true,
+        author: m.author === "assistant" ? "assistant" : "human",
+        agentActions: m.author === "assistant" ? (m.agent_actions ?? null) : null,
+        agentOfferMessageId: m.agent_offer_message_id ?? null,
+        agentActionId: m.agent_action_id ?? null,
       })),
       ...pending
         .filter((p) => !confirmedIds.has(p.clientMessageId))
@@ -838,6 +954,10 @@ export function useConversationMessages(
           localUrl: p.kind === "text" || p.kind === "location" ? null : p.localUrl,
           failReason: p.failReason ?? null,
           forwarded: false,
+          author: "human",
+          agentActions: null,
+          agentOfferMessageId: null,
+          agentActionId: null,
         })),
     ];
   }, [confirmed, pending, viewerRole]);
@@ -870,5 +990,11 @@ export function useConversationMessages(
     /** The admin blocked this chat: show the read-only notice instead of the composer. */
     blocked,
     refreshBlocked,
+    /** Assistant message whose options / delivery form the customer may use now. */
+    currentOfferId,
+    submitAgentAction,
+    submitDeliveryForm,
+    /** Order-agent handoff state, e.g. "handoff_requested" (admin "Needs staff"). */
+    handoffState,
   };
 }
