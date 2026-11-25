@@ -846,10 +846,23 @@ Nothing depends on background work inside the Node process surviving.
 1. **Scheduled endpoint (the reliable path):** `POST /api/agent/dispatch` with
    `Authorization: Bearer <AGENT_DISPATCH_SECRET>`. It sends every due event, retries
    failed ones with backoff (10 s, 30 s, 1 min, 2 min, 5 min, 10 min, 15 min; 8 attempts),
-   and returns counts only. Call it **every minute**, for example from an hPanel cron job:
+   and returns counts only. Call it **every minute** with the included script
+   `scripts/agent-dispatch-cron.js` (also `npm run agent:dispatch`):
+
+   - **hPanel → Advanced → Cron Jobs → Node.js**, every minute (`* * * * *`), *Command to
+     Run* = the script path inside the deployed app folder, for example
+     `<app folder>/scripts/agent-dispatch-cron.js`.
+   - It reads `AGENT_DISPATCH_SECRET` from the environment, or from the app's own gitignored
+     env file (`.env.production.local`, `.env.local`, `.env.production` or `.env`) when the
+     cron job does not get the app's variables. `AGENT_DISPATCH_URL` (or the first argument)
+     overrides the default target, the deployed Inbox's `/api/agent/dispatch`.
+   - It prints one line with the HTTP status and counts only, never the secret. Exit code
+     0 = ok, 1 = HTTP/network failure, 2 = missing secret or bad URL.
+
+   Equivalent one-liner for a shell cron:
 
    ```
-   curl -fsS -X POST -H "Authorization: Bearer <AGENT_DISPATCH_SECRET>" https://chat.hpharmacy.pk/api/agent/dispatch
+   curl -fsS -X POST -H "Authorization: Bearer <AGENT_DISPATCH_SECRET>" https://<inbox host>/api/agent/dispatch
    ```
 
    (Alternative: Supabase `pg_cron` + `pg_net` calling the same URL.)

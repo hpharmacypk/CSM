@@ -10,7 +10,8 @@
     "typecheck": "next typegen && tsc --noEmit",
     "check": "npm run lint && npm run typecheck && npm run build",
     "verify:isolation": "node --env-file=.env.local scripts/verify-isolation.mjs",
-    "verify:features": "node --env-file=.env.local scripts/verify-features.mjs"
+    "verify:features": "node --env-file=.env.local scripts/verify-features.mjs",
+    "agent:dispatch": "node scripts/agent-dispatch-cron.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
