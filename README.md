@@ -946,7 +946,7 @@ With the database switch off nothing is captured and callbacks are refused; with
 - [ ] **H Pharmacy Inbox Agent**, **Check Human Pause**, **Record Staff Reply** → bind the
       agent's `ANSWER_API_TOKEN` Header Auth credential.
 - [ ] **Send Inbox Callback** → replace the `.invalid` URL with
-      `https://chat.hpharmacy.pk/api/agent/callback`; bind a Header Auth credential with
+      `https://rounded-ghostwhite-pigeon-89.hostingersite.com/api/agent/callback`; bind a Header Auth credential with
       name `Authorization` and value `Bearer <AGENT_CALLBACK_SECRET>`.
 - [ ] Leave the COS branch disabled (guard node + disabled nodes) until the COS `source`
       value for web orders is verified.
@@ -957,6 +957,96 @@ With the database switch off nothing is captured and callbacks are refused; with
       wrong phone, corrected form, confirm; a staff reply ("Assistant paused"); "talk to a
       pharmacist" ("Needs staff"); block and delete a test customer during a reply.
 
+## Update: reply notifications (Web Push, opt-in)
+
+Customers can tap the bell in the Inbox header ("Get notified when H-Pharmacy replies").
+The browser asks for permission only on that tap. Each saved **human** staff reply then
+sends one notification per subscribed device. It says only "You have a new reply from
+H-Pharmacy.", with no message text, medication details or identifiers. Tapping it opens
+or focuses the Inbox at `/` on the same site, and the chat opens with the guest session
+already stored on that device. Assistant (bot) replies and customer messages never notify.
+
+### Migration (apply after `20261124000300_agent_bridge.sql`)
+
+`supabase/migrations/20261125000100_web_push.sql`:
+
+- **Tables:** `private.push_subscriptions`, `private.push_jobs`, `private.guest_handoffs` and
+  `private.guest_handoff_failures`. None of them are reachable through the Data API.
+- **Trigger:** `messages_enqueue_push_jobs` adds one job per subscribed device in the same
+  transaction as the reply. It covers human staff messages only, deduplicated by
+  (reply, device), and an error there never blocks the reply.
+- **Guest RPCs:** `push_subscribe`, `push_unsubscribe`, `push_subscription_active`,
+  `create_guest_handoff`, `redeem_guest_handoff` and `guest_handoff_moved`. Ownership
+  always comes from the session.
+- **Server RPCs (service_role only):** `push_claim`, `push_report` and `push_status`.
+
+### How notifications are sent (Hostinger-safe)
+
+- **Fast path:** after a staff member saves a reply, the admin page sends an empty
+  `POST /api/push/nudge`. The route **awaits** the sending before it answers 204, so it
+  does not depend on background work surviving the response.
+- **Reliable path:** the existing scheduled `POST /api/agent/dispatch` (the
+  `scripts/agent-dispatch-cron.js` cron job, every minute) also processes push jobs, even
+  while the order-agent bridge is off. No new scheduler is needed.
+- **Retries:** transient failures (429, 5xx, timeouts and 400/401/403, which usually mean
+  a VAPID or config problem) retry after 15 s, 1 min, 3 min, 10 min and 30 min, up to 6
+  attempts.
+- **Removal and expiry:** a 404/410 from the push service deletes the subscription. Jobs
+  not sent within 6 hours expire. A job is cancelled if the reply was deleted, or if the
+  device now belongs to another chat.
+- **Allowed destinations:** only Google FCM, Mozilla, Apple and Microsoft WNS push hosts,
+  over HTTPS on the default port, resolving to public addresses. Redirects are never
+  followed.
+
+### iPhone / iPad
+
+iOS shows web notifications only for a site added to the Home Screen (iOS 16.4+). On an
+iPhone/iPad browser, a banner under the header (and the bell) shows: "In Safari, tap Share →
+Add to Home Screen. Open H-Pharmacy from your Home Screen, then tap Get notified when
+H-Pharmacy replies." The banner can be dismissed and never shows inside the Home Screen app.
+
+Full-screen Home Screen mode (manifest `display: standalone`) is served only while
+`WEB_PUSH_ENABLED=true`. With it off, the manifest says `display: browser`, so a Home Screen
+shortcut opens in the browser with the existing chat, as before; no bell, banner, service
+worker or code screen appears, and the app works without this migration.
+
+A Home Screen app does **not** share Safari's storage, so it does not have the Safari
+chat session. To move the chat:
+
+1. **In Safari:** tap **Keep this chat in the app** in the banner (or the bell, then
+   **Get a code for the app**). This gives an 8-character
+   code that works once, for 20 minutes, and is stored only as a hash.
+2. **In the app:** the first time it opens with no session, it asks for that code (or
+   "Start a new chat instead").
+3. **Result:** the chat, its history and its "delete for me" choices move to the app's
+   session. Safari then shows "Your chat is now in the H-Pharmacy app". Wrong codes are
+   rate limited: 5 per session per 15 minutes, and 100 per minute in total.
+
+No token ever appears in a URL.
+
+### Environment variables (Hostinger hPanel; server only, never `NEXT_PUBLIC_`)
+
+| Variable | Value |
+|---|---|
+| `WEB_PUSH_ENABLED` | `true` to offer notifications (anything else hides the bell) |
+| `VAPID_PUBLIC_KEY` | from `npx web-push generate-vapid-keys` (87 characters) |
+| `VAPID_PRIVATE_KEY` | from the same command (43 characters). Secret: keep it out of Git |
+| `VAPID_SUBJECT` | `mailto:` + a monitored H-Pharmacy address, or an `https://` contact page |
+| `SUPABASE_SECRET_KEY` | already set for the bridge (the push queue uses the same key) |
+| `AGENT_DISPATCH_SECRET` | already used by the cron job, which now also sends notifications |
+
+The browser reads the public key from `GET /api/push/config` at runtime, so changing these
+needs only an app restart, not a rebuild. Keep the same VAPID key pair for good: a new pair
+silently stops existing subscriptions, and customers would have to turn notifications on again.
+`WEB_PUSH_ALLOW_LOOPBACK_FOR_TESTS` is for local tests only. Never set it on Hostinger.
+
+### Domain
+
+The permanent Inbox address is `https://rounded-ghostwhite-pigeon-89.hostingersite.com`.
+Push subscriptions, the service worker, guest sessions and Home Screen apps all belong to
+that one origin. Changing the domain later would lose every customer's notifications,
+Home Screen app session and saved chat, so keep this address.
+
 ## Public launch checklist (Phase 4, not done yet)
 
 - [ ] **CAPTCHA for anonymous sign-ins.** Enable Cloudflare Turnstile under
@@ -966,7 +1056,8 @@ With the database switch off nothing is captured and callbacks are refused; with
 - [ ] Decide whether to turn off public email signups. Admin access does not depend on it,
       because only `private.admins` grants access.
 - [ ] Enable MFA for the admin account.
-- [ ] Set **Authentication → URL Configuration → Site URL** to `https://chat.hpharmacy.pk`.
+- [ ] Set **Authentication → URL Configuration → Site URL** to
+      `https://rounded-ghostwhite-pigeon-89.hostingersite.com` (the permanent Inbox address).
 - [ ] Confirm the Hostinger Node.js runtime (22.x) in hPanel and set the env vars there.
 - [ ] Run **Advisors → Security** in the Supabase dashboard and resolve any warnings.
 - [ ] Re-run `npm run verify:isolation -- --admin` and the manual checks against the live URL.

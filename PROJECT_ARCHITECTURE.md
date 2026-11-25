@@ -22,7 +22,7 @@ The full release supports live text messages, images, and recorded voice notes i
 | Supabase PostgreSQL | Customer IDs, conversations, messages, attachment references, and read state |
 | Supabase Realtime | Authorized browser subscriptions for live updates. Clients reload missed messages after reconnecting |
 | Supabase Storage | Private image and audio objects with conversation-based access |
-| Hostinger Business | Preferred production runtime for the Next.js Node.js Web App on `chat.hpharmacy.pk`, subject to hPanel support and spare plan capacity |
+| Hostinger Business | Preferred production runtime for the Next.js Node.js Web App at `https://rounded-ghostwhite-pigeon-89.hostingersite.com` (permanent Inbox address) |
 
 Browsers connect directly to Supabase for live events and scoped media uploads. Voice note recording uses the browser microphone over HTTPS. The first media release compresses images and caps recordings at two minutes. The pilot uses Supabase Free. Hosting and backup may have no additional monthly fee if existing capacity is sufficient. Review usage as the history grows and revisit paid capacity when needed.
 

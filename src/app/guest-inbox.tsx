@@ -7,8 +7,11 @@ import { BlockedNotice, ChatThread } from "@/components/chat/ChatThread";
 import { Composer } from "@/components/chat/Composer";
 import { ConnectionBadge } from "@/components/chat/ConnectionBadge";
 import { CHAT_EVENTS, useConversationMessages } from "@/lib/chat/use-conversation-messages";
-import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { fetchPushConfig, isStandaloneApp } from "@/lib/push/client";
+import { GUEST_STORAGE_KEY, isSupabaseConfigured } from "@/lib/supabase/config";
 import { getGuestClient } from "@/lib/supabase/guest-client";
+import { HandoffEntry, MovedNotice } from "./guest-handoff";
+import { GuestNotificationsButton, IosInstallBanner } from "./guest-notifications";
 import { GuestProfileButton } from "./guest-profile";
 
 const BASE_TITLE = "H-Pharmacy Support";
@@ -86,7 +89,21 @@ function useGuestConversationState(supabase: SupabaseClient, conversationId: str
 type BootState =
   | { kind: "starting" }
   | { kind: "ready"; supabase: SupabaseClient; conversationId: string }
+  // Home Screen app opened for the first time: offer to continue the Safari chat.
+  | { kind: "handoff"; supabase: SupabaseClient }
+  // This browser's chat was moved to the Home Screen app.
+  | { kind: "moved"; supabase: SupabaseClient }
   | { kind: "error"; message: string };
+
+const MOVED = Symbol("moved");
+
+function hasStoredGuestSession(): boolean {
+  try {
+    return window.localStorage.getItem(GUEST_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
 
 /** Serialize first-visit setup across tabs so two tabs don't create two guests. */
 async function withBootLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -106,13 +123,18 @@ function isAuthError(error: { code?: string; message?: string; status?: number }
   );
 }
 
-async function bootstrapGuest(supabase: SupabaseClient): Promise<string> {
+async function bootstrapGuest(supabase: SupabaseClient): Promise<string | typeof MOVED> {
   return withBootLock(async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const { data: sessionData } = await supabase.auth.getSession();
       if (!sessionData.session) {
         const { error } = await supabase.auth.signInAnonymously();
         if (error) throw new Error(`Could not start a chat session: ${error.message}`);
+      } else if (attempt === 0) {
+        // Moved to the Home Screen app? Then don't silently open a new chat.
+        // (Errors, e.g. before the push migration, are ignored.)
+        const moved = await supabase.rpc("guest_handoff_moved");
+        if (moved.data === true) return MOVED;
       }
       const { data, error } = await supabase.rpc("get_or_create_my_conversation");
       if (!error && typeof data === "string") return data;
@@ -139,12 +161,23 @@ export function GuestInbox() {
     isSupabaseConfigured() ? { kind: "starting" } : NOT_CONFIGURED,
   );
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (options?: { skipHandoff?: boolean }) => {
     if (!isSupabaseConfigured()) return;
     try {
       const supabase = getGuestClient();
-      const conversationId = await bootstrapGuest(supabase);
-      setBoot({ kind: "ready", supabase, conversationId });
+      // Home Screen app without a session: offer the Safari chat handoff (only
+      // while reply notifications, which bring the handoff, are switched on).
+      if (
+        !options?.skipHandoff &&
+        isStandaloneApp() &&
+        !hasStoredGuestSession() &&
+        (await fetchPushConfig()).enabled
+      ) {
+        setBoot({ kind: "handoff", supabase });
+        return;
+      }
+      const result = await bootstrapGuest(supabase);
+      setBoot(result === MOVED ? { kind: "moved", supabase } : { kind: "ready", supabase, conversationId: result });
     } catch (e) {
       setBoot({ kind: "error", message: e instanceof Error ? e.message : String(e) });
     }
@@ -162,7 +195,44 @@ export function GuestInbox() {
   }, [start]);
 
   if (boot.kind === "ready") {
-    return <GuestReady key={boot.conversationId} supabase={boot.supabase} conversationId={boot.conversationId} />;
+    const supabase = boot.supabase;
+    return (
+      <GuestReady
+        key={boot.conversationId}
+        supabase={supabase}
+        conversationId={boot.conversationId}
+        onMoved={() => setBoot({ kind: "moved", supabase })}
+      />
+    );
+  }
+
+  if (boot.kind === "handoff") {
+    return (
+      <GuestFrame>
+        <HandoffEntry
+          supabase={boot.supabase}
+          onContinue={() => void start({ skipHandoff: true })}
+          onStartNew={() => {
+            setBoot({ kind: "starting" });
+            void start({ skipHandoff: true });
+          }}
+        />
+      </GuestFrame>
+    );
+  }
+
+  if (boot.kind === "moved") {
+    const supabase = boot.supabase;
+    return (
+      <GuestFrame>
+        <MovedNotice
+          onStartNew={() => {
+            setBoot({ kind: "starting" });
+            void supabase.auth.signOut({ scope: "local" }).finally(() => void start({ skipHandoff: true }));
+          }}
+        />
+      </GuestFrame>
+    );
   }
 
   return (
@@ -195,7 +265,15 @@ export function GuestInbox() {
  * The guest's open inbox: chat, customer-side archive and the "deleted"
  * state. One owner for the chat hook so nothing is reloaded from stale state.
  */
-function GuestReady({ supabase, conversationId }: { supabase: SupabaseClient; conversationId: string }) {
+function GuestReady({
+  supabase,
+  conversationId,
+  onMoved,
+}: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  onMoved: () => void;
+}) {
   const chat = useConversationMessages(supabase, conversationId, "customer");
   const state = useGuestConversationState(supabase, conversationId);
   const [archiveBusy, setArchiveBusy] = useState(false);
@@ -246,6 +324,7 @@ function GuestReady({ supabase, conversationId }: { supabase: SupabaseClient; co
     <GuestFrame
       headerAction={
         <div className="flex min-w-0 items-center gap-1.5">
+          <GuestNotificationsButton supabase={supabase} onMoved={onMoved} />
           {state.loaded && state.archiveSupported && !archived ? (
             <button
               type="button"
@@ -268,6 +347,7 @@ function GuestReady({ supabase, conversationId }: { supabase: SupabaseClient; co
           {archiveError}
         </div>
       ) : null}
+      <IosInstallBanner supabase={supabase} onMoved={onMoved} />
       {archived ? (
         <ArchivedView unread={state.unread} busy={archiveBusy} onUnarchive={() => void setArchived(false)} />
       ) : (

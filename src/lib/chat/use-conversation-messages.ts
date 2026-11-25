@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AgentActions, AgentChoice, DeliveryFormValues, Message, SenderRole } from "@/lib/types";
-import { nudgeAgentBridge } from "@/lib/agent/nudge";
+import { nudgeAfterSend, nudgeAgentBridge } from "@/lib/agent/nudge";
 import { IMAGE_MAX_UPLOAD_BYTES, type PreparedImage } from "./image";
 import {
   MEDIA_BUCKET,
@@ -465,7 +465,7 @@ export function useConversationMessages(
           return false;
         }
         addConfirmed([data as Message]);
-        nudgeAgentBridge();
+        nudgeAfterSend(viewerRole);
         return true;
       }
       if (item.kind === "text") {
@@ -479,7 +479,7 @@ export function useConversationMessages(
           return false;
         }
         addConfirmed([data as Message]);
-        nudgeAgentBridge();
+        nudgeAfterSend(viewerRole);
         return true;
       }
 
@@ -525,10 +525,10 @@ export function useConversationMessages(
         return false;
       }
       addConfirmed([data as Message]);
-      nudgeAgentBridge();
+      nudgeAfterSend(viewerRole);
       return true;
     },
-    [supabase, conversationId, addConfirmed, markFailed],
+    [supabase, conversationId, viewerRole, addConfirmed, markFailed],
   );
 
   const enqueue = useCallback(

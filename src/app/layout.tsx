@@ -5,6 +5,10 @@ export const metadata: Metadata = {
   title: "H-Pharmacy Support",
   description: "Message the H-Pharmacy support team.",
   robots: { index: false, follow: false },
+  // No appleWebApp/"web-app-capable" tags on purpose: Home Screen name, icons and
+  // full-screen mode come from app/manifest.ts, which only asks for full screen
+  // while reply notifications (and the chat handoff they need) are on.
+  applicationName: "H-Pharmacy",
 };
 
 export const viewport: Viewport = {

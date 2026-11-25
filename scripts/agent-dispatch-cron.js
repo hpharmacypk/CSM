@@ -6,7 +6,8 @@
  *   node scripts/agent-dispatch-cron.js
  *
  * Sends one authenticated POST to the Inbox's /api/agent/dispatch endpoint, which
- * sends every due event to n8n and retries failed ones. Nothing is sent from here
+ * sends every due event to n8n and every due reply notification (Web Push), and
+ * retries failed ones. Nothing is sent from here
  * directly; the server decides what is due.
  *
  * Settings (never hard-code secrets):
@@ -82,11 +83,21 @@ function summary(body) {
   for (const key of ["enabled", "claimed", "sent", "failed", "error"]) {
     if (body[key] !== undefined && typeof body[key] !== "object") out[key] = body[key];
   }
-  const events = body.queue && typeof body.queue === "object" ? body.queue.events : null;
-  if (events && typeof events === "object") {
-    out.queue = Object.fromEntries(
-      Object.entries(events).filter(([k, v]) => /^[a-z_]{1,20}$/.test(k) && Number.isFinite(Number(v))),
+  const counts = (obj) =>
+    Object.fromEntries(
+      Object.entries(obj).filter(([k, v]) => /^[a-z_]{1,20}$/.test(k) && Number.isFinite(Number(v))),
     );
+  const events = body.queue && typeof body.queue === "object" ? body.queue.events : null;
+  if (events && typeof events === "object") out.queue = counts(events);
+  // Reply notifications (Web Push), processed by the same endpoint.
+  if (body.push && typeof body.push === "object") {
+    const push = {};
+    for (const key of ["enabled", "claimed", "sent", "failed", "removed", "error"]) {
+      if (body.push[key] !== undefined && typeof body.push[key] !== "object") push[key] = body.push[key];
+    }
+    const jobs = body.push.queue && typeof body.push.queue === "object" ? body.push.queue.jobs : null;
+    if (jobs && typeof jobs === "object") push.jobs = counts(jobs);
+    out.push = push;
   }
   return out;
 }

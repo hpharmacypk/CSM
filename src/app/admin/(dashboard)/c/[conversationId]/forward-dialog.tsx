@@ -6,7 +6,7 @@ import { ChatImage } from "@/components/chat/ChatImage";
 import { formatCoords } from "@/components/chat/LocationCard";
 import type { DisplayMessage } from "@/lib/chat/use-conversation-messages";
 import { MEDIA_BUCKET, formatDuration, isAlreadyUploaded } from "@/lib/chat/voice";
-import { nudgeAgentBridge } from "@/lib/agent/nudge";
+import { nudgeAfterSend } from "@/lib/agent/nudge";
 import { useAdminClient } from "../../admin-client-context";
 import { runStorageCleanup, type AdminConversationRow } from "../../admin-data";
 
@@ -121,7 +121,7 @@ export function ForwardDialog({
       setStep("failed");
       return;
     }
-    nudgeAgentBridge(); // a forward is a staff message in the destination chat
+    nudgeAfterSend("admin"); // a forward is a staff message in the destination chat
     onForwarded(targetName);
   };
 
