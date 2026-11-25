@@ -6,11 +6,18 @@ import { parsePushEndpoint, resolvesToPublic } from "./endpoint";
 
 export type SendResult = { result: "sent" | "gone" | "retry" | "failed"; error?: string };
 
+/** "reply": staff replied to a customer. "admin": a customer wrote to staff. */
+export type PushKind = "reply" | "admin";
+
 /**
- * The encrypted payload carries no message text, medication details or
- * identifiers: the service worker always shows the same fixed sentence.
+ * The encrypted payload carries no message text, names, medication details or
+ * identifiers: only which fixed sentence the service worker should show.
  */
-const PAYLOAD = JSON.stringify({ v: 1, kind: "reply" });
+const PAYLOADS: Record<PushKind, string> = {
+  reply: JSON.stringify({ v: 1, kind: "reply" }),
+  admin: JSON.stringify({ v: 1, kind: "admin" }),
+};
+const TOPICS: Record<PushKind, string> = { reply: "hp-reply", admin: "hp-admin" };
 const TIMEOUT_MS = 10_000;
 /** A reply notification is only useful for a day; the push service drops it after that. */
 const TTL_SECONDS = 24 * 60 * 60;
@@ -18,6 +25,7 @@ const TTL_SECONDS = 24 * 60 * 60;
 export async function sendPush(
   cfg: PushConfig,
   sub: { endpoint: string; p256dh: string; auth_secret: string },
+  kind: PushKind = "reply",
 ): Promise<SendResult> {
   const url = parsePushEndpoint(sub.endpoint, cfg.allowLoopbackForTests);
   // An endpoint we will never send to is removed like an expired one.
@@ -30,13 +38,13 @@ export async function sendPush(
   try {
     details = webpush.generateRequestDetails(
       { endpoint: url.href, keys: { p256dh: sub.p256dh, auth: sub.auth_secret } },
-      PAYLOAD,
+      PAYLOADS[kind],
       {
         vapidDetails: { subject: cfg.subject, publicKey: cfg.publicKey, privateKey: cfg.privateKey },
         TTL: TTL_SECONDS,
         urgency: "high",
-        // Replies that wait on the push service collapse into one notification.
-        topic: "hp-reply",
+        // Notifications that wait on the push service collapse into one.
+        topic: TOPICS[kind],
         contentEncoding: "aes128gcm",
       },
     );

@@ -81,35 +81,83 @@ export async function isSubscribedHere(supabase: SupabaseClient, sub: PushSubscr
 }
 
 /**
- * Subscribes this browser (permission must already be granted) and registers
- * it for the current guest chat. Ownership is taken from the session.
+ * This browser's push subscription for our VAPID key (permission must already
+ * be granted). Reuses the existing one; replaces it only if it was made with
+ * a different key. One browser has ONE subscription for this site, shared by
+ * the customer Inbox and the staff dashboard.
  */
-export async function subscribeHere(supabase: SupabaseClient, publicKey: string): Promise<void> {
+export async function subscribeBrowser(publicKey: string): Promise<PushSubscription> {
   const reg = await registerServiceWorker();
   let sub = await reg.pushManager.getSubscription();
   if (sub && !sameKey(sub, publicKey)) {
     await sub.unsubscribe().catch(() => undefined);
     sub = null;
   }
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) });
-  }
+  return sub ?? reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) });
+}
+
+export function subscriptionArgs(sub: PushSubscription) {
   const json = sub.toJSON();
-  const { error } = await supabase.rpc("push_subscribe", {
-    p_endpoint: sub.endpoint,
-    p_p256dh: json.keys?.p256dh ?? "",
-    p_auth: json.keys?.auth ?? "",
-  });
+  return { p_endpoint: sub.endpoint, p_p256dh: json.keys?.p256dh ?? "", p_auth: json.keys?.auth ?? "" };
+}
+
+/**
+ * Subscribes this browser and registers it for the current guest chat.
+ * Ownership is taken from the session.
+ */
+export async function subscribeHere(supabase: SupabaseClient, publicKey: string): Promise<void> {
+  const sub = await subscribeBrowser(publicKey);
+  const { error } = await supabase.rpc("push_subscribe", subscriptionArgs(sub));
   if (error) throw new Error(error.message);
 }
 
-/** Removes the registration for this chat and unsubscribes the browser. */
+/**
+ * Stops notifications for this chat on this device. Only the server-side
+ * registration is removed: the browser subscription may also be used by the
+ * staff dashboard on a shared device, and nothing is sent to it once the
+ * registration is gone.
+ */
 export async function unsubscribeHere(supabase: SupabaseClient): Promise<void> {
   const sub = await currentSubscription();
   if (!sub) return;
   const { error } = await supabase.rpc("push_unsubscribe", { p_endpoint: sub.endpoint });
-  // Unsubscribe the browser even if the server call failed: the push service
-  // then answers 410 and the server removes the row on the next send.
-  await sub.unsubscribe().catch(() => undefined);
   if (error) throw new Error(error.message);
+}
+
+/**
+ * Shows a notification from this device only (nothing is sent through a push
+ * service). If it does not appear, notifications are blocked at device or
+ * browser level even though the page may report permission as granted.
+ */
+export async function showLocalTestNotification(): Promise<boolean> {
+  try {
+    const reg = await registerServiceWorker();
+    await reg.showNotification("H-Pharmacy", {
+      body: "Notifications are working on this device.",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/badge-96.png",
+      tag: "hp-test",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Remembers (per browser) that the customer turned notifications on for a chat. */
+export function rememberOptIn(key: string, on: boolean) {
+  try {
+    if (on) window.localStorage.setItem(key, "1");
+    else window.localStorage.removeItem(key);
+  } catch {
+    // Storage unavailable: nothing to remember.
+  }
+}
+
+export function hasOptIn(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
 }

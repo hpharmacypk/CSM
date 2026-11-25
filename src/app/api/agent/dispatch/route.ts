@@ -30,8 +30,14 @@ export async function POST(request: Request) {
     body.queue = status.error ? null : status.data;
   }
   if (push) {
-    const status = await getPushServiceClient(pushCfg).rpc("push_status");
-    body.push = { ...push, queue: status.error ? null : status.data };
+    const service = getPushServiceClient(pushCfg);
+    const [status, adminStatus] = await Promise.all([service.rpc("push_status"), service.rpc("admin_push_status")]);
+    body.push = {
+      ...push,
+      queue: status.error ? null : status.data,
+      // Staff notifications (absent before the admin push migration).
+      admin_queue: adminStatus.error ? null : adminStatus.data,
+    };
   } else {
     body.push = { enabled: false };
   }

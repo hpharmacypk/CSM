@@ -6,6 +6,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Brand } from "@/components/Brand";
 import { getAdminBrowserClient } from "@/lib/supabase/admin-browser-client";
 import { AdminClientContext } from "./admin-client-context";
+import { AdminNotificationsButton, releaseAdminPushBeforeSignOut } from "./admin-notifications";
 import { ConversationList } from "./conversation-list";
 
 export function AdminShell({ children }: { children: ReactNode }) {
@@ -19,6 +20,8 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     setSigningOut(true);
+    // Stop staff notifications on this device first (shared devices).
+    await releaseAdminPushBeforeSignOut(supabase);
     // Local scope: ends this browser's admin session only.
     await supabase.auth.signOut({ scope: "local" });
     router.replace("/admin/login");
@@ -49,6 +52,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               Labels
             </Link>
           </nav>
+          <AdminNotificationsButton supabase={supabase} />
           <button
             type="button"
             onClick={signOut}

@@ -9,8 +9,9 @@ export function nudgeAgentBridge() {
 }
 
 /**
- * Same idea for reply notifications: after a staff message is saved, ask the
- * server to send the queued push notifications now. Carries no data.
+ * Same idea for notifications: after any message is saved, ask the server to
+ * send queued push notifications now (staff reply -> customer devices,
+ * customer message -> staff devices). Carries no data.
  */
 export function nudgePushQueue() {
   if (typeof window === "undefined") return;
@@ -19,6 +20,7 @@ export function nudgePushQueue() {
 
 /** Nudges everything that may be waiting on a message the viewer just saved. */
 export function nudgeAfterSend(senderRole: "customer" | "admin") {
+  void senderRole; // both directions can have queued notifications
   nudgeAgentBridge();
-  if (senderRole === "admin") nudgePushQueue();
+  nudgePushQueue();
 }

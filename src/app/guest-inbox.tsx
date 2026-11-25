@@ -11,7 +11,7 @@ import { fetchPushConfig, isStandaloneApp } from "@/lib/push/client";
 import { GUEST_STORAGE_KEY, isSupabaseConfigured } from "@/lib/supabase/config";
 import { getGuestClient } from "@/lib/supabase/guest-client";
 import { HandoffEntry, MovedNotice } from "./guest-handoff";
-import { GuestNotificationsButton, IosInstallBanner } from "./guest-notifications";
+import { GuestNotificationsButton, GuestNotifyPrompt, IosInstallBanner, useCustomerPush } from "./guest-notifications";
 import { GuestProfileButton } from "./guest-profile";
 
 const BASE_TITLE = "H-Pharmacy Support";
@@ -276,6 +276,7 @@ function GuestReady({
 }) {
   const chat = useConversationMessages(supabase, conversationId, "customer");
   const state = useGuestConversationState(supabase, conversationId);
+  const push = useCustomerPush(supabase, conversationId);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
 
@@ -324,7 +325,7 @@ function GuestReady({
     <GuestFrame
       headerAction={
         <div className="flex min-w-0 items-center gap-1.5">
-          <GuestNotificationsButton supabase={supabase} onMoved={onMoved} />
+          <GuestNotificationsButton push={push} supabase={supabase} onMoved={onMoved} />
           {state.loaded && state.archiveSupported && !archived ? (
             <button
               type="button"
@@ -347,7 +348,10 @@ function GuestReady({
           {archiveError}
         </div>
       ) : null}
-      <IosInstallBanner supabase={supabase} onMoved={onMoved} />
+      <IosInstallBanner push={push} supabase={supabase} onMoved={onMoved} />
+      {state.loaded && !archived ? (
+        <GuestNotifyPrompt push={push} supabase={supabase} conversationId={conversationId} onMoved={onMoved} />
+      ) : null}
       {archived ? (
         <ArchivedView unread={state.unread} busy={archiveBusy} onUnarchive={() => void setArchived(false)} />
       ) : (

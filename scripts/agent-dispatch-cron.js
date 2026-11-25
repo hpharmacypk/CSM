@@ -97,6 +97,8 @@ function summary(body) {
     }
     const jobs = body.push.queue && typeof body.push.queue === "object" ? body.push.queue.jobs : null;
     if (jobs && typeof jobs === "object") push.jobs = counts(jobs);
+    const adminJobs = body.push.admin_queue && typeof body.push.admin_queue === "object" ? body.push.admin_queue.jobs : null;
+    if (adminJobs && typeof adminJobs === "object") push.admin_jobs = counts(adminJobs);
     out.push = push;
   }
   return out;

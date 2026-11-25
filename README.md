@@ -1047,6 +1047,58 @@ Push subscriptions, the service worker, guest sessions and Home Screen apps all 
 that one origin. Changing the domain later would lose every customer's notifications,
 Home Screen app session and saved chat, so keep this address.
 
+## Update: staff notifications, first-visit prompt, mobile panels
+
+### Staff notifications (admin dashboard)
+
+- **Opt-in:** the bell in the admin header offers "Get notified when customers message" and
+  "Turn off".
+- **What triggers a push:** one push per subscribed staff device for every new customer
+  message, in new and existing chats alike. Staff replies, assistant (bot) replies and
+  option clicks or delivery forms never notify staff.
+- **What it says:** only "New customer message.", with no names, message text or medical
+  details. Tapping it opens `/admin`, which requires admin sign-in.
+- **Authorization:** registration requires `private.is_admin()`. Every send re-checks it,
+  and devices of removed admins are deleted.
+- **Shared devices:** sign-out removes this device's staff registration first. If a
+  different admin signs in on the same browser, the previous admin's registration is
+  removed. One browser has one push subscription, so turning off customer or staff
+  notifications only removes the server-side registration, never the browser's
+  subscription.
+- **Migration:** `supabase/migrations/20261126000100_admin_push.sql` (after
+  `20261125000100_web_push.sql`) adds `private.admin_push_subscriptions`,
+  `private.admin_push_jobs` and its trigger, the RPCs `admin_push_subscribe`,
+  `admin_push_unsubscribe`, `admin_push_device_state` and `admin_push_release_device`
+  (admins), and `admin_push_claim`, `admin_push_report` and `admin_push_status`
+  (service role).
+- **Before the migration:** the app works without it, with the staff bell hidden and staff
+  jobs skipped. **Deploy the code first, then apply the migration.**
+- **No new variables or cron job:** the same VAPID keys, `/api/push/nudge` (now also sent
+  after customer messages) and `/api/agent/dispatch` handle both queues.
+
+### Customer first-visit prompt
+
+Once the chat is ready, a one-time prompt titled "Get notified when H-Pharmacy replies"
+offers **Turn on notifications** / **Not now**:
+- **Permission:** asked only on that tap.
+- **One time:** the prompt is remembered per chat in this browser, and the bell stays
+  available for later.
+- **iPhone/iPad in the browser:** it shows the Add to Home Screen steps and the chat code.
+- **When it doesn't appear:** never over the Home Screen code screen, and not when
+  notifications are on, blocked or unsupported.
+- **Re-registration:** a device that opted in is re-registered silently, with no prompt,
+  if its server registration was removed, for example after the browser renewed its
+  subscription. Turning it off stops this.
+- **Test notification:** "Show a test notification" (when on) shows a notification from
+  the device itself. If it doesn't appear, notifications are blocked in device or app
+  settings even though the page reports permission as granted.
+
+### Mobile panels
+
+Bell panels and the prompt are a bottom sheet on phones: full width, safe-area padding,
+wrapping text, scrolling inside, and an always-visible close button. On larger screens
+they are a dropdown or centered dialog kept inside the viewport.
+
 ## Public launch checklist (Phase 4, not done yet)
 
 - [ ] **CAPTCHA for anonymous sign-ins.** Enable Cloudflare Turnstile under
